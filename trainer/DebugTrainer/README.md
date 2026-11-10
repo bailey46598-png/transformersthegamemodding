@@ -10,6 +10,18 @@
 > `third_party/imgui` holds only the Dear ImGui v1.91.9 files the build uses (MIT license, see `LICENSE.txt`).
 > Paths below like `Lab - VehicleJump` and `mods\...` are from the original author's PC.
 
+
+> **If some features don't work (greyed out, or "unavailable")**
+> - **Chapter select** needs extra states added to the game's level scripts first. With Python 3 (or Blender's Python):
+>   `python scripts\ChapterSelect\add_chapter_states.py "<your lab game folder>" --apply`
+>   (run it without `--apply` first to preview; `--restore` undoes it).
+> - **Opponents (combat hub)** needs `scripts\CombatHub\make_hub.py "<your lab game folder>\LEVELS\TESTTRANQUILITY"`
+>   (see `scripts\CombatHub\README.md`; the level also needs a map copied in).
+> - **Noclip, or lots of things greyed out / "code bytes don't match this exe":** your `Transformers.exe` is a
+>   different build from the one the trainer was made for (retail v1.0.254.2). Open `DebugTrainer.log` next to
+>   `Transformers.exe` and look for `signature mismatch:` lines. Send that log to the other person so the
+>   addresses can be checked against your exe.
+
 An in-game Dear ImGui menu for **Transformers: The Game** (PC, 2007, `Transformers.exe` v1.0.254.2 retail).
 It exposes the game's own hidden debug menu without editing `FRONTEND.GUIC`. Press **F1** to open or close it.
 

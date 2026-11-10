@@ -1,4 +1,4 @@
-# DebugTrainer (v0.2)
+# DebugTrainer (v0.3)
 
 > **Setting it up on your own PC (repo version)**
 > 1. Install Visual Studio 2022 Community with the **Desktop development with C++** workload.
@@ -36,6 +36,7 @@ It exposes the game's own hidden debug menu without editing `FRONTEND.GUIC`. Pre
 | Noclip | Toggle key (default N, "Change key" rebinds it), W/A/S/D or arrows to move relative to the camera, left mouse up, right mouse down, Shift faster, speed sliders, "Reset to nearest safe spot" | Every frame (from a BeginScene hook, before it is drawn) the player is moved, placed with the game's SetTransform 0x445520 and their velocity zeroed. Movement keys and mouse buttons are hidden from the game while it is on. The reset uses the game's SafeRespawn 0x448AB0 (nearest safe respawn point), or the last spot you stood on the ground in levels without those points. |
 | Character select | Every creature this level registered (filters: Transformers only, In this level, name); ones not in memory are loaded through the game's creature cache first, current one marked, "Play as" or double-click | Writes the name into the game's own player-swap request (`0x6FE50C`), the same path the `#PlayerType` script message uses. You keep your position. Cancelled if the game doesn't pick it up within 5 s. |
 | Opponents (combat hub) | Mode (Fight, Boss, Dummy, Wave), opponent list, Spawn, Clear, Go to arena | Only in a level whose script has the `Hub*` states from `mods\CombatHub\make_hub.py` (TestTranquility). Loads the opponent through the same mid-level loader as character select, clears the previous one, then switches the script to `Hub<Mode>_<Name>`. The live opponent's model is never freed; the previous one is freed 2.5 s after it's gone. Added in 0.2. Not tested in game yet. |
+| Vehicle jump | On/off checkbox (Space jumps while on) | Calls `VehicleJump_Enabled` exported by `VehicleJump.asi` 0.2+. Greyed out if that plugin isn't installed (it isn't in this repo yet). Added in 0.3. |
 | Level (experimental) | Complete current level | The game's `SetLevelComplete` action, behind a confirm box. Not tested yet. |
 | Player | Character pointer, state id, robot/vehicle, airborne/grounded | Read-only, from `RE_NOTES.md`. |
 | Advanced: raw cheat flags | All 32 bits of the flag word `0x6FB268`, known ones named | Direct writes. Unknown bits may crash the game. |

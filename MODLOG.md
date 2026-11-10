@@ -1092,3 +1092,241 @@ holds globals but not the heap, so this was found statically.
   got ~5.6. The second ray (0x4B09D5) only lowers `+0x158`, which stayed 13 in all dumps.
 - **CharacterCams 0.3:** Bonecrusher's preset gets near 9 / far 22 (`CarNearDistance` / `CarFarDistance`). Ray hook
   kept. Installed in `Lab - VehicleJump`. **Not tested in game.**
+- **In game 0.3 (user video):** camera now behind him but at bumper height (his back door fills the screen), sometimes
+  swinging to his side. F8: live pitch +0x7C = −4000 = default +0xBC (22° down; +0x68 = sin = −0.37); Bumblebee's
+  dump had −8353. The aim point sits low on the vehicle, so 10 units back at 22° the camera is ~3.5 up, below the
+  Buffalo's 4.35 roof.
+- **CharacterCams 0.4:** `CarHeight` default 3 (added to +0x4C/+0x50/+0x54; +0x54 is added to the aim point's y at
+  0x4B1088). New `CarPitchDegrees` (default 27, clamped to the preset's 16.5–49° limits) → +0xBC/+0xC0/+0xC4 and live
+  +0x7C. Installed in `Lab - VehicleJump`. **Not tested in game.**
+- **In game 0.4 (user: "awful"):** the camera went almost top-down right above the Buffalo and didn't turn with him.
+  So `CarHeight` (+0x4C/+0x50/+0x54) moves the **camera** up, not the aim point; +3 with 27° made it top-down.
+  Hand-tuning Bumblebee's preset wasn't converging.
+- **Optimus's car preset 0x721C80 = a copy of the truck preset 0x7219B0** (rep movsd at 0x4A02F5), heights −0.4/−0.5,
+  far 5. Truck preset: start 12, near 12 / far −2 (so it zooms *in* with speed), pitch −6000 (33°).
+- **CharacterCams 0.5:** `CarCamera=Truck` (default) bases Bonecrusher on 0x7219B0 with near 12 → far 14 (pulls out
+  slightly instead of in), distance 12, height 0, pitch 33° (its own), plus the own-body ray fix. `Bumblebee` keeps the
+  old route. INI notes corrected. Installed in `Lab - VehicleJump`. **Not tested in game.**
+- **In game 0.5 (user):** camera close to right; "he still hops when he drives". Video at 20 fps: the horizon holds
+  still while the Buffalo's top edge travels ~100 px (of 360) and back, about once a second, so the **truck** bounces.
+- **Cause (likely):** car setup 0x442880, type switch 0x442B20 (table 0x4445B8, index type−1). Bonecrusher (type 0x25,
+  case 0x443F4F, flag `+0x7E1 |= 8`, shared only with Brawl) uses params 0x432F90; Optimus 0x4344A0. Six wheels via
+  0x6531B0 (record +0xA0/+0xA8/+0xAC/+0xD0/+0xDC/+0xE0/+0xE4/+0xEC). +0xA8/+0xAC are tyre grip (load × grip at
+  0x65829A/0x6582FA): Bonecrusher 5/3 (mid 4.5/3) vs Optimus 3/2 (mid 3.5/2.5). Mass +0x70 600 vs 750, +0x54 −0.85
+  vs −0.1, wheel y −0.9 vs −0.3.
+- **CharacterCams 0.6:** hook at 0x443F6B runs his setup (wheel positions kept), then copies Optimus's body block
+  +0x40..+0xA8 and the per-wheel tuning fields. `[Bonecrusher] Handling=Optimus|Default`. Disassembly checked
+  (ret 4, registers kept). Installed in `Lab - VehicleJump`. **Not tested in game.**
+
+### Bonecrusher wheels: route found (2026-11-10)
+- **THINGS is searched for vehicle skins.** Skin models such as `BB_brakeLights`, `BB07_reverseLights` and
+  `OBJ_CAR_genWheel2/3` exist only in `STUFF\THINGS_PC.GSC` (0.9 MB, loaded in every level), yet the skins use them
+  everywhere. So one `bonecrusher_wheel1` added to THINGS covers every map. No LEVEL.CFG or scene edits per level;
+  each level's `VEHICLESKINS.CFG` only needs the `OBJECTSKIN bonecrusher_wheel / MODEL bonecrusher_wheel1` line.
+  (No HooverExt or PS3 scene has his wheel.)
+- **Why new draw records crashed (lab test 4), solved:** GSNH holds the loader's draw-record list:
+  `{count, X, 0, then count pointers → every draw record}`. Airbase GSNH+0x193C = 2133 (= its 2,133 records), City
+  +0x1A78 = 2144, THINGS +0x560 = 123. The fields before it: TST0 / VBIB pointers, counts (13 / 1 / 0x10). Only
+  listed records get their +0x24 VB index replaced by the D3D buffer. A new record must be appended to this list and
+  the count raised.
+- **DISP geometry region (+0x7C):** a 20-byte zero header, all draw records back to back (Airbase 2,133 × 100 B),
+  then the matrices to the end of DISP.
+- **Airbase scene make-up (14.3 MB):** VBs ~7.5 MB, IB 0.77 MB, 365 textures ~3.5 MB, NU20 ~2.6 MB. A whole or trimmed
+  copy per level is too heavy, and wii2pc.Conv only reads Wii-style sources, so a from-scratch PC writer is big.
+- **Plan:** in THINGS, via TF Studio's tested JS (GSCFile, addObjectCopies, applyMeshEdits) driven in the browser:
+  (1) a named copy `bonecrusher_wheel1` of an existing THINGS wheel; (2) give it its own draw record, appended to
+  the DISP record region and to the GSNH record list (new); (3) import the Airbase wheel's mesh into it
+  (mesh_io); (4) add its texture (container + TST0/GSNH texture tables) and a copy of its material (MS00 + DISP
+  68 B material record + GSNH material table) (new); (5) skin lines in every VEHICLESKINS.CFG.
+- **Built (`mods\BonecrusherWheel\make_wheel.py`):** repurposes THINGS's `BUTTON_WII_Z` (no references to any
+  BUTTON_WII_*/BUTTON_PS2_* in the exe or data; material 66 / texture 25 used only by the four BUTTON_WII_*). The Airbase
+  wheel (200 verts, stride 36, fmt 0x4000909 → first 28 bytes = 0x909) goes into THINGS VB 2 (base 4084) and the IB
+  (start 12122, 334 indices). The four BUTTON_WII_* records point at it; texture 25 = Airbase texture 296
+  (byte-identical); material 66 gets genWheel1's +0x40/+0xB4/+0x120/+0x1F0. Bounds recomputed. Draw matrix ==
+  instance matrix for all of these, so the mesh is copied in its own space. No index table changes; the file grew
+  907,972 → 912,068 bytes.
+- **Checks:** pcgsc_check unchanged by the object table (7 stock CUBEICON mismatches); read back, the wheel is
+  0.71 × 2.0 × 2.0 with 192 triangles and the identical texture.
+- **Lab install (`Lab - VehicleJump`):** `STUFF\THINGS_PC.GSC` (backup `.pre_bcwheel`); `VEHICLESKINS.CFG` in every
+  level except Airbase → `OBJECTSKIN bonecrusher_wheel / MODEL BUTTON_WII_Z` (HooverExt's existing line changed from
+  `jeeepWheel`; backups `.pre_bcwheel`). **Not tested in game.**
+- **In game (user): "he has no wheels."** Cause: the skin `MODEL` lookup (0x436F80 → 0x5867C0 → 0x584DF0, `name_NG`
+  then `name`) searches only the 8-slot scene list 0x2B7BF14, which only the level scene loader fills (0x4A3D0A,
+  `call 0x584DD0` per `SCENE`). THINGS isn't in it, so the earlier THINGS evidence (BB_brakeLights etc.) was wrong:
+  those skins just fail.
+- **Fix: `make_scene.py` → `BCWHEEL_PC.GSC`,** the wheel THINGS with every other instance renamed `~…` (same length),
+  every other draw matrix collapsed below the world, and the wheel moved to (0, −3000, 0) with its bounds. Same
+  layout; pcgsc_check same as before.
+- **Lab:** THINGS restored to stock. `BCWHEEL_PC.GSC` in 9 PATH folders. `SCENE BCWheel` added to every LEVEL.CFG
+  except Airbase and the menus (CURRGEN and NEXTGEN blocks; Cybertron's loose list). Backups `LEVEL.CFG.pre_bcwheel`.
+  The skin lines from before stay. **Not tested in game.**
+- **In game (user video, BCWheel scene):** the wheels now load (correct tread and texture), but only 1–2 show per
+  side; the rear axle is bare. The truck tips, bounces and the underside parts poke out.
+  - Car physics object = car +0x150 (built by 0x655EB0 from the handling block): wheel count u16 at +0x1A0 (car
+    +0x2F0), live wheel records (0x100 each) via pointers at +0x1AC (car +0x2FC), allocated right after the car
+    block. Bonecrusher has 6.
+  - 0x42E2D0 caps the per-wheel **tyre-track** buffers at 4 (car +0x140..+0x14C), not the wheel models. The
+    skin-wheel drawing limit is not found yet. Value 70 (BONECRUSHER_WHEEL's part index) at 0x425061 / 0x43BCDB is
+    unrelated (weapons).
+- **CharacterCams 0.7:** F9 = 4 s physics trace (car block + 8 × 0x100 wheel records + profile every ~10 ms) →
+  `CharacterCams_trace_id<identity>_<n>.bin`. Installed in the lab.
+- **Airbase video (user):** all six wheels show there (middle pair rides visibly higher). So the "missing" wheels
+  elsewhere were buried, not undrawn.
+- **F9 trace (Airbase, driving, 400 samples / 4.3 s):** ride height (body − wheel centres) swings 0.98–1.32. Suspension
+  travel is 0.5 (live wheel +0xD4 = compression, 1.00 = no contact). The middle pair (wheels 2/3) repeatedly loses
+  contact and the right side bottoms out past full compression (extension −0.07), with wheel force (+0xB4) spikes to
+  12,662 against a rest value of −735.75 (= −mass × 0.981). That's the hop.
+- **Suspension formula (0x657F3E..0x658032):** force = curve(compression) × wheel +0xDC; minus wheel speed ×
+  (+0xE0 compressing / +0xE4 extending); capped at mass × 50. The live wheel record is a 1:1 copy of the handling
+  block's wheel record (0x6536B0). Live values: +0xDC 1.0, +0xE0/+0xE4 0.5, +0xA0 (wheel radius) 0.566 (Optimus's);
+  his drawn tyre radius is 1.0, so it sank 0.43 into the ground.
+- **CharacterCams 0.8:** the handling hook also sets per-wheel damping `WheelDamping` (default 2, was 0.5), spring ×
+  `WheelSpring` (1) and radius `WheelRadius` (1.0). Hook disassembly checked. Installed in `Lab - VehicleJump`.
+  **Not tested in game.**
+
+### VehicleJump 0.2 + DebugTrainer 0.3: no more hopping on W; vehicle jump is a trainer toggle (2026-11-10)
+- **User:** "why is Bumblebee bouncing when I press W?" VehicleJump.log: `vehicle jump (Direct)` at 17:05:17.5 / 18.6 /
+  23.0, about one Cooldown (1 s) apart while driving. So the trigger bit was held, not pressed.
+- **Cause:** VehicleJump treated `Char+0x684 & 0x8000` as "jump pressed". The game sets that bit when the movement
+  stick is past 0.1 (0x40D9DE: `fcomp 0.1` → `or [esi+0x684], 0x8000`), so holding W re-triggered a jump every
+  cooldown, on every vehicle.
+- **Fix:** `VehicleJump.ini` `UseGameJumpButton=0`, `Hotkey=0x20` (Space, edge-triggered, game window in front only).
+  Backups `.pre_spacekey`.
+- **User request: vehicle jump only via the trainer.** VehicleJump 0.2 always installs its hook, starts from `Enabled`
+  (default now 0) and exports `VehicleJump_Enabled(int set)` (0/1 switch, −1 read). DebugTrainer 0.3 adds a "Vehicle
+  jump [Space]" checkbox under Noclip (GetModuleHandle("VehicleJump.asi") + GetProcAddress). It isn't saved, so it's off
+  on every start. Both installed in `Lab - VehicleJump` (backups `DebugTrainer.asi.v0.2.bak`, `VehicleJump.asi.v0.1.bak`).
+  **Not tested in game.**
+
+### Bonecrusher wheels: culling bounds fixed, skin gaps filled (2026-11-10)
+- **Cause of "only 1–2 wheels per side":** instance bounds (+0x80 min, +0x90 max, +0xA0 sphere) are **local** to the
+  instance in stock files (Airbase `bonecrusher_wheel1` at (−170, 0, 1067): min (−0.355, −0.999, −0.999), sphere
+  (0, 0, 0) r 1.457; every THINGS instance likewise). `make_wheel.py` wrote them in world space and `make_scene.py`
+  moved them to y −3000, so each drawn wheel was culled by a sphere 3000 units below it. Only BNDS is world space.
+- **Fix:** `make_wheel.py` writes local bounds and copies genWheel1's instance flags (+0xB8: 4; the button had 6);
+  `make_scene.py` moves only BNDS. The new `BCWHEEL_PC.GSC` differs from the old one in 18 bytes; its instance bounds
+  now equal Airbase's exactly.
+- **Skin gaps:** skins load from the `LEVELLOCAL.CFG` include. AutoBonus1 includes
+  `Levels/barricadeTranquility/VehicleSkins.cfg`, which doesn't exist; CybertronDcon's include is commented out. Both
+  get a wheel-only `VEHICLESKINS.CFG` (CybertronDcon also a new include line). HooverExt's wheel block lost its stock
+  `SCALE 4.0` (covers HooverDam too).
+- **Lab (`Lab - VehicleJump`):** new scene in the 9 PATH folders (old one kept as `CITY\BCWHEEL_PC.GSC.pre_boundsfix`);
+  config backups `.pre_boundsfix`. **Not tested in game.** Built with Blender 3.6's Python (no system Python found).
+
+- **In game (user video 17.17, Suburbs):** all six wheels now draw, so the bounds fix works. But they were tan with
+  red swirls; Airbase's (video 16.43) are near-black.
+- **Cause:** the wheel material has two texture layers: +0xB8 = 296 (64×32 white sign with a red ring) and +0xFC =
+  297 (128×128 dark rubber, rusty edges). `make_wheel.py` copied 296. The earlier "byte-identical tyre texture" note
+  was wrong about which texture is the tyre. The wheel's UVs span the whole texture (u 0..1, v −0.99..−0.02).
+- **Fix:** texture 25 = Airbase 297. `BCWHEEL_PC.GSC` is now 918,212 bytes; reinstalled in the 9 lab PATH folders
+  (previous build kept as `CITY/BCWHEEL_PC.GSC.pre_tyretex`). The material is still genWheel1's lit single-layer
+  one, so shading may differ a little from Airbase's two-layer material. **Not tested in game.**
+- ffmpeg for reading user videos: `C:/Users/skeet/Desktop/ffmpeg-8.1.1-essentials_build/bin/ffmpeg.exe`.
+
+### Bonecrusher: 0.8 wheel radius / damping switched off (2026-11-10)
+- **In game (user video 17.24, Suburbs, CharacterCams 0.8):** tyres are dark now (texture 297 fix works), but the
+  wheels are far too big and the steering is off. User asked to restore it.
+- **Cause:** 0.8's `WheelRadius=1`. The drawn wheel follows the physics radius (wheel +0xA0), so 1.0 instead of the
+  copied 0.566 drew them ~1.77× bigger. The 0.8 note "his drawn tyre radius is 1.0, so it sank" was wrong. The
+  Airbase video (16.43) the user calls correct was recorded before 0.8 was installed (16:47).
+- **Restore (INI only, no rebuild):** `WheelRadius=0`, `WheelDamping=0` (0 = leave Optimus's copied values) in the lab
+  INI (backup `CharacterCams.ini.pre_restore`) and in `mods\CharacterCams\CharacterCams.ini`. `Handling=Optimus` stays
+  (the pre-0.8 state). The .asi's built-in defaults are still 2 / 1, so the INI lines must stay. **Not tested in game.**
+
+### Bonecrusher can't be damaged in robot mode: investigation (2026-11-10, static only, no fix yet)
+- **Ruled out:** config (same `ENERGY 1500`, `DamageLocator ALL`, Size Large; the missing IMPACTVELOCITY/
+  RECOILRUNOVERVELOCITIES/FLYBACKFORCE block is also missing on Brawl, who takes damage). His `DEFINEPOI` numbers
+  match his own model's locator slots. Only two identity-14 checks in the exe: 0x467B9A (death anim 0x24) and
+  0x41061E (skips `+0x630 |= 0x100`, an aim/anim flag). Setup case 0x4710FC matches Optimus's (plus `type+0x28 = 1`).
+- **Health:** robot form = char physobj at `+0x930`, energy float `+0x954` (physobj `+0x24`), max short `+0x9B8`.
+  Vehicle form uses the vehicle object's own (`veh+0x9E4` or `+0x5A4`), see GetEnergy 0x437C60. Separate pools.
+- **Damage multipliers:** 4-bit slots at physobj `+0xA2..+0xA7` (char `+0x9D2..`), index into 0x6BCE28
+  {0, .1, .25, .5, .75, 1, 1.25, 1.5, 1.75, 2, 3, 4, 5, 10, 25, -1}. Reset 0x4F3DD0 = all 1.0.
+  0x4FAE80(bool) = invulnerable on (all 0) / off; many state-enter functions call it with 1 and restore
+  saved values (`char+0x4C0/4C4/4C8`) on exit (e.g. 0x454680 / 0x410650). SetEnergy 0x4F3010 (god mode check).
+- **Hit pipeline:** impacts act like small explosions. 0x507460 queries bodies whose origin is within
+  max(impact radius, 15) (0x620110), then per body: skip if physobj `+0xAA` bit 7; distance from impact to the
+  shape's closest point (shape vtable +0x18); **skip if that distance ≤ 0.01 (impact inside the shape)** or
+  > physobj `+0x20` + radius; category mask physobj `+0x44` vs impact `+0x4C`; then TakeHit 0x506180 (more exits:
+  `+0xAA`/`+0xA8` bit 7, multiplier 0 → reaction 0x465070 only, no health loss).
+- **Model oddities:** 82 bones (most of any; next Barricade 76); bounds x ±7.95, z −9.76..1.5 (claw arm);
+  no shoulder locators, chest locator named `chest1`.
+- **Next:** read in game his `+0x9D2..+0x9DB`, `+0x954`, `+0x974`, `+0x950`, and the shape his robot body
+  registers. Not found statically where the robot collision shape is built.
+
+### Bonecrusher: real tread texture, pre-lit wheel material, stock handling (2026-11-10)
+- **User:** make him handle like the normal Bonecrusher and make the wheels match Airbase.
+- **Airbase frame (16.43 video, full res):** tyres are black with a knobby tread *texture* and dark hubs. Neither
+  texture used so far has a tread.
+- **Texture ids are slot numbers.** Airbase has 370 slots (GHG header `texSlots`, TST0 = 8 + 370 × 44) but 365
+  textures in the file; 5 slots have no data (ids 252–258 are unused by any material). Past them list index =
+  id − 5: `sky` id 305 = list[300]; TurretBase 298 = list[293]. The wheel's ids 296 / 297 = list[291] (32×32 DXT1,
+  tread + tan hub parts) and list[292] (16×16 DXT5). THINGS has 70 slots and 70 textures, so ids are direct there.
+  **Any tool that maps Airbase material texture ids straight onto the texture list is off by up to 5.**
+- **Shading:** the wheel's vertex colours are dark (0x14–0x5D), and its material 0x3E1E2010 lacks the 0x00400000
+  bit that the game-lit vehicle materials have (genWheel1 0x3E502011, ConvoyTruckWHEEL / HumveeBody 0x32502011).
+  World geometry (0x3E100011, 0x3E102010) lacks it too. Reading: that bit = lit by the game, vertex colours
+  ignored (not confirmed in the exe).
+- **`make_wheel.py`:** texture 25 = list[291]; material 66 = +0x40 0x3E102010, +0x44 0x10 (copied from a stock
+  THINGS material with the same format), +0x128 0xFF000000. `BCWHEEL_PC.GSC` = 910,532 bytes, in the 9 lab PATH
+  folders (previous build `CITY\BCWHEEL_PC.GSC.pre_tread`).
+- **Handling:** `[Bonecrusher] Handling=Default` in the lab INI (backup `.pre_default_handling`) and the mod INI, so
+  the handling hook isn't installed and he drives on the game's own Bonecrusher values. Camera and R view fixes
+  stay. **Not tested in game.**
+- **New `mods\DamageProbe` 0.1** (read-only ASI): logs every character body each impact considers (routines
+  0x507460 / 0x507750) with the check that keeps or drops it, every TakeHit (0x506180) with health before/after,
+  and changes to known characters' health, multipliers and flags. Prologue bytes are checked before hooking.
+  No other mod hooks these. Installed in `Lab - VehicleJump`. **Not run in game yet.** Test steps in its README:
+  Barricade vs Bonecrusher in the TestTranquility hub, F7 marks between them.
+- **DamageProbe run 1 (user, TestTranquility hub, drone vs Bonecrusher, neither transformed):** hits do reach
+  Bonecrusher. His damage object (1500 HP, a8=68 aa=0C, same flag bytes as the drone's) got TakeHit with
+  multipliers `0/0 0/0 0/0 0/0 0/0 1/1` (all ten attack slots 0, health stays 1500). The drone's (600 HP) were all 1
+  and its health dropped 20 per hit. That exact pattern = 0x4FB010(1) ("invulnerable to everything", also done by
+  0x4CF690(1) through the four group setters 0x4FAFA0/0x4FAEF0/0x4FAE80/0x4FAF60). 0x4CF690 targets the body
+  model's damage object (`model+0xC → +8 → +0x9C0`, or `+4 → +0x580`, same as 0x42ACF0), not `char+0x930`.
+  The 0.1 "is a character" check was wrong (type records are heap pointers listed in 0x6FDE90), so no character
+  names or STATE lines appeared. Log kept as `Lab - VehicleJump\DamageProbe_run1.log`.
+- **DamageProbe 0.2:** character check fixed (pointer table 0x6FDE90, count 0x6FE0E8); walks the live list
+  `[[0x6F997C]+0x54]` (next = +0); each TAKEHIT/IMPACT line names the character and which damage object was hit
+  (`ROBOT-phys(+930)`, `MODEL-phys(52C)`, `TRAN-phys(530)`); STATE lines show both objects' health and
+  multipliers. Installed in the lab. **Not run yet.**
+- **DamageProbe run 2 (user):** Bonecrusher's hits land on his ROBOT damage object (`char+0x930`), same as the
+  drone's. The vehicle-object theory is wrong. His robot multipliers are all 0 from the first frame after spawn
+  (the drone, spawned earlier into the same char memory, started at all 1). `type+0x28` set in his setup case is
+  just Side (1 = Decepticon). Not the hub script: it spawns him like every opponent (`#Script=Combat` etc.).
+  Script command `SetPhysicsState` (0x43B5B0, `immunetoshots=` / `immunetothrown=` / `immunetomelee=`) can set
+  these, but no script in the lab uses the immune options. Log kept as `DamageProbe_run2.log`.
+- **DamageProbe 0.3:** also hooks the 12 single-slot setters (0x4FACB0…0x4FAE60), the 4 group setters
+  (0x4FAE80/AEF0/AF60/AFA0), the all-setter 0x4FB010 and the reset 0x4F3DD0. Logs every write of 0 (and every
+  write on a character) with the caller's return address. Stub code checked with Capstone. Installed. **Not run.**
+- **DamageProbe run 3 (user): cause found.** Right after Bonecrusher spawns, 0x43A7A0 resets his robot damage
+  object, then (AI only, `+0x62C` bit 14 clear) calls 0x4FAE80(1) and zeroes every other slot one by one.
+  0x43A7A0 is reached from `Char::SetupDamageProfile` 0x43AE00: `jmp [ (identity+1)*4 + 0x43AE78 ]`. The table gives
+  each identity a profile: 1 Optimus 0x40E090, 2 Brawl 0x43A840, 3/4/5 0x40E050, 7 Ironhide 0x40E100, 8 Megatron
+  0x40DFB0, 9/10 0x40DF30, 11 0x40E000, **14 Bonecrusher 0x43A7A0 (all categories 0)**, 15 TripleC 0x43AB40,
+  16 0x40E150, 17 0x40DE10, 18–21 0x40E1E0, 22–23 0x40E2A0, 24–25 0x43AC20, 26–27/30–31 0x40E210, 28–29 0x40E250;
+  6/12/13 none. His profile is Brawl's (same 0x4378B0(3) call) with everything zeroed. Log kept as
+  `DamageProbe_run3.log`.
+- **New `mods\BonecrusherDamage` 0.1 (fix):** writes table entry 0x43AEB4 = 0x43AE31 (Brawl's profile) after
+  checking it holds 0x43AE4A. INI `DamageProfile=` Brawl/Megatron/Blackout/Optimus/Bumblebee/Drone/None/Off.
+  Installed in `Lab - VehicleJump` (DamageProbe 0.3 still installed to confirm). **Not tested in game.**
+- **Run 4 (user, BonecrusherDamage 0.1 on):** patch applied (log `Patched ... Brawl`). His slots are now Brawl-like
+  (`1/1 0/1 1/1 1/0 0/0 1/1`); he gets knocked back but health stays 1500. His hits were types 21 and 24, which map
+  (0x4F3F20 idx table 0x4F4044) to slot 1hi and slot 2lo, both 1.0. So a later gate stops the damage.
+  For characters TakeHit 0x506180 doesn't subtract itself: it queues (`phys+0x30`) and calls 0x505F60 ->
+  **Char::TakeDamage 0x464E90** -> 0x464960 (size table 0x6B6F90 by `+0x5DC` row / `+0x5CC` column via 0x407870,
+  0x40E2E0, **health floor 0x43AF00**: damage capped to health − `char+0x4A0`). `char+0x498` = post-hit timer
+  (0.5 s after a hit, counted down in 0x47282F for every transformer; while > 0 damage is skipped).
+  `+0x4A0` is written by group join 0x43A3D0 (group +8), 0x43A5D0, 0x4C4339 (0), 0x4C4C3A / 0x4C4C6C (32000).
+  Log kept as `DamageProbe_run4.log`.
+- **DamageProbe 0.4:** adds Char::TakeDamage (before/after: health, `+0x498`, `+0x4A0`, `+0x490`, `+0x49C`,
+  `+0x5CC`), 0x464960 entry (APPLY, timer check) and the health floor 0x43AF00 (FLOOR, damage before/after).
+  Installed. **Not run.**
+- **Run 5 (user, DamageProbe 0.4): second block found.** Char::TakeDamage got dmg 20 / 80, no hit timer
+  (`+0x498` = 0), floor `+0x4A0` = 0, but the floor 0x43AF00 already received 0. Between them, `Char::ModifyDamage`
+  0x44F060 (`call` through table 0x44F200, entry identity + 1) gives Bonecrusher 0x40DDF0, which sets the damage to 0
+  unconditionally (player and AI). Brawl 0x40DEE0 only zeroes it as an AI in vehicle form; Jazz/5/6/12/13 have none
+  (0x44F164). A scan of all nine per-identity switches (0x4059D3, 0x43AE00, 0x445CB2, 0x448C60, 0x44F060, 0x44F293,
+  0x45A21E, 0x46D79B, 0x471D52) found no other table where he has his own entry. Log kept as `DamageProbe_run5.log`.
+- **BonecrusherDamage 0.2:** also writes 0x44F23C = 0x44F164 (no adjustment) after checking 0x44F087.
+  INI `DamageModifier=None|Brawl|Off`. Installed in the lab. **Not tested in game.**

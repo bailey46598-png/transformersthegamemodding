@@ -32,7 +32,7 @@
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND, UINT, WPARAM, LPARAM);
 
-#define TRAINER_VERSION "0.2"
+#define TRAINER_VERSION "0.3"
 
 // ---------------------------------------------------------------- config + log
 struct Config {
@@ -1776,6 +1776,33 @@ static void DrawNoclip() {
     if (g_noclipStatus[0]) ImGui::TextWrapped("%s", g_noclipStatus);
 }
 
+// Vehicle jump: VehicleJump.asi (mods\VehicleJump) exports VehicleJump_Enabled(set) (0/1 = switch, -1 = read).
+// It starts off; this checkbox is the only way to turn it on. Space jumps while it's on.
+typedef int(__cdecl* VehicleJumpEnabledFn)(int);
+static VehicleJumpEnabledFn VehicleJumpApi() {
+    HMODULE m = GetModuleHandleA("VehicleJump.asi");
+    return m ? reinterpret_cast<VehicleJumpEnabledFn>(GetProcAddress(m, "VehicleJump_Enabled")) : nullptr;
+}
+
+static void DrawVehicleJump() {
+    ImGui::SeparatorText("Vehicle jump");
+    VehicleJumpEnabledFn api = VehicleJumpApi();
+    if (!api) {
+        ImGui::TextDisabled(GetModuleHandleA("VehicleJump.asi") ? "VehicleJump.asi is too old (needs 0.2 or later)."
+                                                                 : "VehicleJump.asi isn't installed.");
+        return;
+    }
+    bool on = api(-1) != 0;
+    if (ImGui::Checkbox("Vehicle jump  [Space]", &on)) {
+        api(on ? 1 : 0);
+        Log("vehicle jump -> %d", on ? 1 : 0);
+        Notice(on ? "Vehicle jump ON (Space)" : "Vehicle jump OFF");
+    }
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Lets cars jump with Space (VehicleJump.asi). Off at start-up.\n"
+                          "Settings (height, cooldown) are in VehicleJump.ini.");
+}
+
 // Key capture for rebinding: the first key pressed (not the mouse's left/right/middle) becomes the noclip key.
 static void UpdateKeyCapture() {
     if (!g_capturingKey) return;
@@ -1823,6 +1850,7 @@ static void DrawMenu() {
         DrawDebugMenu();
         DrawEngineOptions();
         DrawNoclip();
+        DrawVehicleJump();
         DrawLevelSelect();
         DrawCharacterSelect();
         DrawOpponents();

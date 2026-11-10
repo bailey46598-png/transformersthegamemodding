@@ -1,0 +1,221 @@
+# =====================================================================
+#  .gitignore for our Transformers: The Game (2007) modding repo
+#
+#  Golden rule: this repo holds ONLY our own docs and code.
+#  Never game files, never extracted assets, never decompiled code.
+#
+#  Patterns use [aA] brackets so they work no matter the letter case
+#  (the game's files are UPPERCASE, e.g. LEVEL.GHG).
+#  Lines starting with ! mean "allow this even if a rule above blocks it".
+#  Later lines win over earlier ones.
+# =====================================================================
+
+
+# ---------------------------------------------------------------------
+# 1. Game programs and libraries (the game itself, loaders, built mods)
+# ---------------------------------------------------------------------
+*.[eE][xX][eE]
+*.[dD][lL][lL]
+*.[aA][sS][iI]
+*.[sS][yY][sS]
+
+
+# ---------------------------------------------------------------------
+# 2. Game archives and disc images
+# ---------------------------------------------------------------------
+*.[dD][aA][tT]
+*.[pP][aA][kK]
+*.[iI][sS][oO]
+*.[bB][iI][nN]
+*.[cC][uU][eE]
+*.[mM][dD][fF]
+*.[mM][dD][sS]
+*.[zZ][iI][pP]
+*.[rR][aA][rR]
+*.7[zZ]
+*.[cC][aA][bB]
+
+
+# ---------------------------------------------------------------------
+# 3. Game data formats (NU2 engine) - models, scenes, textures, scripts
+# ---------------------------------------------------------------------
+*.[gG][hH][gG]
+*.[gG][sS][cC]
+*.[cC][fF][gG]
+*.[cC][fF][gG][cC]
+*.[sS][cC][pP]
+*.[gG][uU][iI][cC]
+*.[cC][uU]2
+*.[aA][nN]3
+*.[aA][nN][mM]
+*.[nN][uU][pP]
+*.[dD][dD][sS]
+*.[tT][gG][aA]
+*.[tT][eE][xX]
+*.[fF][nN][tT]
+
+
+# ---------------------------------------------------------------------
+# 4. Game audio and video
+# ---------------------------------------------------------------------
+*.[bB][iI][kK]
+*.[wW][aA][vV]
+*.[mM][pP]3
+*.[oO][gG][gG]
+*.[xX][mM][aA]
+*.[bB][nN][kK]
+
+
+# ---------------------------------------------------------------------
+# 5. Extracted / ripped assets (any folder with these names)
+# ---------------------------------------------------------------------
+extracted/
+[eE]xtracted*/
+ripped/
+dumps/
+dump/
+assets/
+game/
+game_files/
+*.[oO][bB][jJ]
+*.[fF][bB][xX]
+*.[bB][lL][eE][nN][dD]
+*.[bB][lL][eE][nN][dD]1
+
+
+# ---------------------------------------------------------------------
+# 6. Decompiled code and reverse-engineering databases
+# ---------------------------------------------------------------------
+decompiled/
+decomp/
+disasm/
+# IDA
+*.[iI][dD][bB]
+*.[iI]64
+*.[iI][dD]0
+*.[iI][dD]1
+*.[iI][dD]2
+*.[nN][aA][mM]
+*.[tT][iI][lL]
+# Ghidra
+*.[gG][pP][rR]
+*.[rR][eE][pP]/
+*.[lL][oO][cC][kK]
+*.[lL][oO][cC][kK]~
+# Binary Ninja / x64dbg / Cheat Engine memory dumps
+*.[bB][nN][dD][bB]
+*.[dD][dD]32
+*.[dD][mM][pP]
+
+
+# ---------------------------------------------------------------------
+# 7. Build junk (Visual Studio C++, Python, tools)
+# ---------------------------------------------------------------------
+.vs/
+[Dd]ebug/
+[Rr]elease/
+[Bb]in/
+[Oo]bj/
+build/
+out/
+x64/
+x86/
+Win32/
+*.pdb
+*.ilk
+*.lib
+*.exp
+*.pch
+*.ipch
+*.iobj
+*.ipdb
+*.tlog
+*.log
+*.user
+*.suo
+*.sdf
+*.opensdf
+*.VC.db
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+node_modules/
+
+
+# ---------------------------------------------------------------------
+# 8. Saves, screenshots, recordings (big and personal)
+# ---------------------------------------------------------------------
+*.[tT]ransformers_[sS]aved[gG]ame
+*.[pP][nN][gG]
+*.[jJ][pP][gG]
+*.[jJ][pP][eE][gG]
+*.[mM][pP]4
+*.[mM][kK][vV]
+
+
+# ---------------------------------------------------------------------
+# 9. Secrets and personal settings (never share these)
+# ---------------------------------------------------------------------
+.env
+.env.*
+*.key
+*.pem
+*.token
+secrets/
+.claude/settings.local.json
+
+
+# ---------------------------------------------------------------------
+# 10. Operating-system clutter
+# ---------------------------------------------------------------------
+Thumbs.db
+desktop.ini
+.DS_Store
+*.tmp
+*.bak
+~$*
+
+
+# =====================================================================
+#  ALLOW LIST - our own work. These come last so they win.
+# =====================================================================
+
+# This file itself
+!.gitignore
+
+# All Markdown docs, anywhere (plans, logs, notes, READMEs)
+!*.md
+
+# Small images we drop into notes/images/ for docs (screenshots of OUR work)
+!notes/images/
+!notes/images/*.png
+!notes/images/*.jpg
+
+# Our scripts (Python, PowerShell, batch, BMS QuickBMS scripts, Blender scripts)
+!scripts/**/*.py
+!scripts/**/*.ps1
+!scripts/**/*.bat
+!scripts/**/*.bms
+!scripts/**/*.sh
+
+# Our trainer: source code, Cheat Engine tables, and settings we wrote.
+# (Compiled .exe/.dll/.asi inside trainer/ stay blocked - rebuild them instead.)
+!trainer/**/*.cpp
+!trainer/**/*.c
+!trainer/**/*.h
+!trainer/**/*.hpp
+!trainer/**/*.def
+!trainer/**/*.sln
+!trainer/**/*.vcxproj
+!trainer/**/*.vcxproj.filters
+!trainer/**/*.ini
+!trainer/**/*.CT
+!trainer/**/*.lua
+!trainer/**/*.py
+
+# Experiments: only our notes and code, never copied game data
+!experiments/**/*.py
+!experiments/**/*.ps1
+!experiments/**/*.cpp
+!experiments/**/*.h

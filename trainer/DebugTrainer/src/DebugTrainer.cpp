@@ -1685,7 +1685,7 @@ static void SetNoclip(bool on) {
     }
     g_noclip = on;
     Log("noclip %s at %.1f %.1f %.1f", on ? "on" : "off", g_ncPos[0], g_ncPos[1], g_ncPos[2]);
-    Notice(on ? "Noclip ON" : "Noclip OFF");
+    Notice(on ? (g_menuOpen ? "Noclip ON - close the menu to fly" : "Noclip ON") : "Noclip OFF");
 }
 
 // Each frame, before it's drawn: moves and places the player while noclip is on; otherwise remembers the
@@ -1761,6 +1761,9 @@ static void DrawNoclip() {
         g_capturingKey = true;
     }
     ImGui::TextDisabled("W/A/S/D or arrows: move   Left mouse: up   Right mouse: down   Shift: faster");
+    // Movement is paused while this menu is open (its keys drive the menu), so say how to start flying.
+    if (g_noclip)
+        ImGui::TextColored(ImVec4(1, 0.8f, 0.3f, 1), "Noclip is ON. Close this menu (%s) to fly around.", KeyToName(g_cfg.menuKey));
     ImGui::SetNextItemWidth(160);
     ImGui::SliderFloat("Speed", &g_cfg.noclipSpeed, 5.0f, 150.0f, "%.0f");
     ImGui::SameLine();

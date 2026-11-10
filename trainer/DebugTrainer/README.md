@@ -17,7 +17,9 @@
 >   (run it without `--apply` first to preview; `--restore` undoes it).
 > - **Opponents (combat hub)** needs `scripts\CombatHub\make_hub.py "<your lab game folder>\LEVELS\TESTTRANQUILITY"`
 >   (see `scripts\CombatHub\README.md`; the level also needs a map copied in).
-> - **Noclip, or lots of things greyed out / "code bytes don't match this exe":** your `Transformers.exe` is a
+> - **Noclip turns on but you can't move:** close the menu first (F1). While the menu is open, W/A/S/D drive the
+>   menu, not the player. Tick Noclip (or press N), close the menu, then fly.
+> - **Lots of things greyed out / "code bytes don't match this exe":** your `Transformers.exe` is a
 >   different build from the one the trainer was made for (retail v1.0.254.2). Open `DebugTrainer.log` next to
 >   `Transformers.exe` and look for `signature mismatch:` lines. Send that log to the other person so the
 >   addresses can be checked against your exe.

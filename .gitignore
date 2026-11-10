@@ -167,6 +167,20 @@ secrets/
 
 
 # ---------------------------------------------------------------------
+# 9b. Tool output made from the game (each of us regenerates our own)
+# ---------------------------------------------------------------------
+# TF Studio: audio ripped from the game's videos, backups of edited game files,
+# and each person's own game-folder setting
+cutscene_audio/
+*.studio.bak
+game_path.txt
+# Full upstream checkouts of third-party libraries (we keep only the files we use)
+third_party/**/.git/
+third_party/**/examples/
+third_party/**/docs/
+
+
+# ---------------------------------------------------------------------
 # 10. Operating-system clutter
 # ---------------------------------------------------------------------
 Thumbs.db

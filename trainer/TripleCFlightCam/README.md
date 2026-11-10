@@ -5,6 +5,10 @@ ASI loader (`dinput8.dll`) like the other plugins.
 
 ## Install
 
+Needs the ASI loader (`dinput8.dll`) in the game folder. The `.asi` is not in the repo: run `build_msvc.bat` first
+(Visual Studio 2022 with "Desktop development with C++"), which makes `build\TripleCFlightCam.asi`. Don't use it
+together with `CharacterCams.asi`: both patch the same camera table.
+
 Copy `build\TripleCFlightCam.asi` and `TripleCFlightCam.ini` next to `Transformers.exe`. It writes
 `TripleCFlightCam.log` there.
 

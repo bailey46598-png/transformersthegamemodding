@@ -1330,3 +1330,58 @@ holds globals but not the heap, so this was found statically.
   0x45A21E, 0x46D79B, 0x471D52) found no other table where he has his own entry. Log kept as `DamageProbe_run5.log`.
 - **BonecrusherDamage 0.2:** also writes 0x44F23C = 0x44F164 (no adjustment) after checking 0x44F087.
   INI `DamageModifier=None|Brawl|Off`. Installed in the lab. **Not tested in game.**
+
+## VoiceMenu: play your character's voice lines from a menu (2026-11-10)
+**Mod `mods\VoiceMenu`** (v0.1): V opens a list of the current character's lines; 1-9 play, [ ] page, Tab browses
+other speakers, B plays a random own line. Details in its README.
+- **Fresh Build has no dialogue WAVs** (no `AUDIO\_Dialogue`). The retail extract in
+  `Transformers.The.Game\...\Decompiled Shit game\AUDIO\_Dialogue\USA` has all 293 (16-bit PCM, 148 MB).
+- **Speakers** come from `LEVELS\*\SPEECH.INI` `Head=`. The retail SPEECH.INI files cover 271 of the 293 WAVs;
+  Fresh Build's cover fewer. The rest are MUSIC.CFG overlays only, assigned by mission chapter (21, all Optimus).
+- **No input hooks:** GetAsyncKeyState on keys NUCONFIG.TXT doesn't bind; Present/Reset vtable patch only, 1.5 s
+  after the device appears so it chains after DebugTrainer. Sound via PlaySound (not the game's mixer).
+- **Built and installed** in `Lab - VehicleJump` (ASI, INI, `VoiceMenu\Lines\*.wav`, `VoiceMenu\VoiceLines.txt`).
+  **Not run in game yet.**
+- **SpecialMoves 0.10 in game:** "movement still does not work" (no details yet). The stick vector
+  `+0x650/654/658` (scale `+0x660`) is written by the pad reader 0x446DA0 every frame, so the input is fresh.
+- **SpecialMoves 0.11:** no behaviour change. While flailing it logs 4×/s: stick, requested and playing
+  animation, move vector `+0x690..`, speed `+0x6B0`, facing `+0x600`, position, and state +4 / +0x70 / +0x78.
+  Installed in the lab; waiting for a test run plus a description.
+- **User report (0.10): Megatron doesn't move at all while flailing.** The log from that run is from 0.10, so it
+  has no movement data. Megatron's normal idle/walk animations have no NEXTANIM either and switch fine, so the
+  missing NEXTANIM lines on his spin_hook_* animations are not the blocker.
+- **Lead:** the Flail update 0x466150 calls the move helper only once `state+0x78` bit 2 is set. That happens
+  when the wind-up spin_hook_start (0x85) is the playing animation and reaches progress `anim+0x98` ≥ 1.0, or
+  when it is missing. If the wind-up never reports done, no movement code runs at all. 0.11 logs exactly this.
+  Waiting on a 0.11 run.
+- **0.11 run (measured):** the wind-up finishes (`st+0x78` 0x8 → 0xA), but with the stick fully pushed the
+  helper requests idle (0x86) and the speed stays 0. Bit 8 (0x8) is set from the first frame. The move helper
+  (0x40EFDA) then replaces the stick with zero.
+- **Root cause:** the Flail update's last call, 0x452BA0, measures the distance from the character to the
+  PLAYER (`[0x770614]`, minus both radii via 0x437BC0). When close it sets bit 8 ("arrived, stop walking";
+  thresholds 0x682D44 / 0x682960, timer branch when bit 4 is set, which is set for identity 11 = Barricade).
+  For the player the distance is 0, so the bit was always set. Barricade escaped through the timer branch.
+- **SpecialMoves 0.12:** a stub at 0x452BA0 clears bit 8 and returns for the player; everyone else runs the
+  original. Installed in the lab. **Not tested in game.**
+- **VoiceMenu 0.1 in game:** works (user-tested): menu, character match, playback.
+
+### VoiceMenu 0.2: dramatic lines, speech bubble, cooldown (2026-11-10)
+- **Speech system (static reading):** the SPEECH.INI parser 0x4AAC00 builds records `+0 tag, +4 sound handle
+  (0x550E80 on the sound manager 0x76D410, group 8: only finds already-registered samples), +0xA head (word),
+  +0xC Localize(Text), +0x10 ActiveTime`. Head names in the parser: Optimus 0, BumbleBee 1, Starscream 3,
+  Frenzy 4, Jazz 5, Blackout 6, Ironhide 7, MEGATRON 10, Barricade 11 (no Brawl/Bonecrusher name).
+  Speech::Play 0x4AAD90 starts the sound, then calls `HUD(0x713630)->ShowSpeech(head, text, secs, 0)` 0x492EB0
+  (thiscall, ret 0x10) → 0x48FFB0, which picks the portrait from a 12-entry table (8 BoneCrusherHead,
+  9 BrawlHead, 2 = bumblebee again) and keeps the text pointer.
+- **Subtitles** are in `GUI\STRINGS_BIO.CSV` (UTF-16, LABEL + language columns); 247 of 293 lines have text.
+- **0.2:** calls ShowSpeech itself after PlaySound (byte-checked, HUD widgets checked). `DramaticOnly=1` uses a
+  text-based filter in the generator: 134 lines. Cooldown 3 s after a line ends (`Cooldown=`,
+  `AllowInterrupt=`). Brawl's six lines (d3_ch4_obj2..7, filed under Bumblebee) moved to Brawl, head 9.
+  Compiled call checked in the disassembly. Installed in `Lab - VehicleJump`. **Not run in game yet.**
+- **VoiceMenu 0.2 in game:** bubble and head work; the bubble always closes after 3 s.
+- **VoiceMenu 0.3:** bubble widget = `[[0x713630+0x18]+0x10]`: +0x10 seconds (only used when it re-shows,
+  0x490170), +0x14 time left (0x48FFB0 always sets 3.0; 0x4901B0 subtracts the frame time `[0x7183BC]` and
+  hides the bubble at <= 0), +0x20 text. The mod sets +0x14 to the line's time left each frame, 0 at the end.
+  Installed in `Lab - VehicleJump`. **Not run in game yet.**
+- **0.12 (rebuilt):** FlailSpeedScale default 2.0 → 1.0 (game speed, matches the flail-walk animation), at the user's request. Installed in the lab (SHA-256 `48662DFDBE03C5AB…`).
+- **Released** as VoiceMenu v1.0.0 (tag `VoiceMenu-v1.0.0`): source in `trainer/VoiceMenu`. The zip has no game audio; the mod reads the game's own `AUDIO\_Dialogue\USA`, or the installer copies the WAVs into `VoiceMenu\Lines` from another folder.

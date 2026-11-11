@@ -7,3 +7,4 @@ Research notes in our own words: file formats, memory addresses, how game system
 
 ## Start here
 - `CAMERA_FIX_GUIDE.md` – how character cameras work, the camera debug tools, and how to fix the drones next.
+- `HOOVEREXT_PS3_RESTORE.md` – the hi-res Hoover Dam exterior from the two PS3 maps: what each map has, how the PS3 → PC converter works, step status and in-game checks.

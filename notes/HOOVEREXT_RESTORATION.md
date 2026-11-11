@@ -1,5 +1,7 @@
 # HooverExt restoration: map versions compared, and the plan (2026-11-08)
 
+Start with `HOOVEREXT_PS3_RESTORE.md` for the PS3 hi-res restore (converter, step status, checks).
+
 Goal: one PC Hoover Dam exterior that has every **pro** of the Hoover Dam Edition (HDE) map setups and none of the cons.
 Data from `mods\ps3_tools\compare_maps.py` (instances, collision, surface types) plus texture/material checks.
 ✅ = measured in the files, ❓ = inferred, 🎮 = needs an in-game check.

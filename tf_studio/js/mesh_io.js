@@ -120,7 +120,7 @@ export async function exportObjectGLB(S, o, { name = `object_${o}`, level = '' }
       if (L.uv >= 0) UV.set([S.dv.getFloat32(o2 + L.uv, true), S.dv.getFloat32(o2 + L.uv + 4, true)], i * 2);
       if (L.col >= 0) C.set([S.u8[o2 + L.col + 2] / 255, S.u8[o2 + L.col + 1] / 255, S.u8[o2 + L.col] / 255, S.u8[o2 + L.col + 3] / 255], i * 4);
     }
-    const t = stripToTriangles(S.ib(0), d.start, d.prims, n);
+    const t = stripToTriangles(S.ib(d.ib ?? 0), d.start, d.prims, n);
     const idx = new Uint32Array(t.length);
     for (let k = 0; k < t.length; k += 3) { idx[k] = t[k]; idx[k + 1] = t[k + 2]; idx[k + 2] = t[k + 1]; } // mirrored: re-wind
     const g = new THREE.BufferGeometry();
@@ -219,7 +219,7 @@ function drawWorldGeometry(S, d) {
     if (L.uv >= 0) UV.set([S.dv.getFloat32(o + L.uv, true), S.dv.getFloat32(o + L.uv + 4, true)], i * 2);
     if (N) { const b = S.u8.subarray(o + L.nrm, o + L.nrm + 3); const r = rot3(world, b[0] / 127.5 - 1, b[1] / 127.5 - 1, b[2] / 127.5 - 1); const l = Math.hypot(...r) || 1; N.set(r.map(x => x / l), i * 3); }
   }
-  return { P, N, UV, C: null, tris: stripToTriangles(S.ib(0), d.start, d.prims, n) };
+  return { P, N, UV, C: null, tris: stripToTriangles(S.ib(d.ib ?? 0), d.start, d.prims, n) };
 }
 
 // triangle list -> one strip joined with degenerate triangles; each triangle starts on an even position so the
@@ -316,6 +316,7 @@ export function applyMeshEdits(F, S, edits) {
     dv.setUint32(r + 0x10, base, true);
     dv.setUint32(r + 0x14, n, true);
     dv.setUint32(r + 0x18, start, true);
+    dv.setUint32(r + 0x1C, 0, true); // the new strip is in index buffer 0 (hi-res City has two)
     newLocal.set(rec, loc);
     verts += n; tris += geo.tris.length / 3;
   }

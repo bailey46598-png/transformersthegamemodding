@@ -3,7 +3,9 @@
 import * as THREE from 'three';
 import { GSCScene, M4 } from './formats.js';
 import { openScene } from './ps3_scene.js';
-import { LevelView } from './level_view.js';
+import { LevelView, finishGeometry } from './level_view.js';
+import { loadHires, hiresAvailable, forDetail, HIRES } from './hires.js';
+import { nextgenScenes } from './level_scenes.js';
 import { Cutscene, blockPose, objectVisible, poseMatrix } from './cu2.js';
 import { loadCharacter, loadModel, siblingWithBones, buildMeshes, poseBones, skinMeshes, disposeGroup } from './rig.js';
 import { api, $, status, esc, joinPath, Viewport, ddsTexture, download } from './common.js';
@@ -85,8 +87,7 @@ export class CutsceneView {
       notify: m => status(m),
     });
     this.frame = 0; this.playing = false;
-    this.sceneCache = { path: null, S: null };
-    this.texCache = new Map();
+    this.sceneCache = { key: null, list: [], S: null, path: null };
     this.chars = []; this.objs = [];
     // the soundtrack, taken from the game's video of this cutscene (see tools/extract_cutscene_audio.py)
     this.audio = new Audio();
@@ -98,7 +99,12 @@ export class CutsceneView {
 
   camMode() { return $('c-camera').checked && !!this.cut?.cameras.length; }
 
+  get high() { return $('c-detail').value === 'high'; }
+
   async init() {
+    await loadHires();
+    if (!hiresAvailable()) { const o = $('c-detail').options[1]; o.disabled = true; o.textContent += ' — not found'; }
+    else try { if (localStorage.getItem('tfstudio.cutdetail') === 'high') $('c-detail').value = 'high'; } catch { /* not kept */ }
     status('Reading cutscene configs…');
     const L = await api.list('CUT');
     const cfgs = L.files.filter(f => /\.cfg$/i.test(f.name));
@@ -150,6 +156,10 @@ export class CutsceneView {
 
   bindUI() {
     $('c-filter').oninput = () => this.renderList();
+    $('c-detail').onchange = () => {
+      try { localStorage.setItem('tfstudio.cutdetail', $('c-detail').value); } catch { /* not kept */ }
+      if (this.entry) this.open(this.entry);
+    };
     $('c-list').onclick = e => { const it = e.target.closest('.item'); if (it) this.open(this.list[+it.dataset.i]); };
     $('c-play').onclick = () => this.setPlaying(!this.playing);
     $('c-scrub').oninput = e => { this.setPlaying(false); this.seek(+e.target.value); };
@@ -200,19 +210,27 @@ export class CutsceneView {
       await this.loadSound(entry, cut);
       if (entry.borrowed) this.warnings.push(`No config of its own: the level and characters come from ${entry.borrowed}.CFG (assumed to be the same cutscene).`);
       // level
-      this.scenePath = entry.level ? await levelFolderScene(entry.level) : await resolveLevelScene(cfg.scenes);
-      if (this.scenePath) {
-        let S = this.sceneCache.path === this.scenePath ? this.sceneCache.S : null;
-        if (!S) {
-          status(`Reading ${this.scenePath}…`);
-          S = openScene(await api.bytes(this.scenePath), GSCScene);
-          this.sceneCache = { path: this.scenePath, S };
-          this.texCache = new Map();
+      let paths = this.high ? await this.highDetailScenes(entry, cfg) : null;
+      if (!paths) {
+        const p = entry.level ? await levelFolderScene(entry.level) : await resolveLevelScene(cfg.scenes);
+        paths = p ? [p] : [];
+      }
+      this.scenePath = paths.map(p => p.split('/').pop()).join(' + ') || null;
+      if (paths.length) {
+        const key = paths.join('|').toLowerCase();
+        if (this.sceneCache.key !== key) {
+          const list = [];
+          for (const [k, p] of paths.entries()) {
+            status(`Reading ${p}${paths.length > 1 ? ` (${k + 1}/${paths.length})` : ''}…`);
+            list.push({ path: p, S: openScene(await api.bytes(p), GSCScene), tex: new Map() });
+            if (this.loading !== token) return;
+          }
+          this.sceneCache = { key, list, S: list[0].S, path: paths[0] };
         }
         if (this.loading !== token) return;
-        status(`Building ${this.scenePath.split('/').pop()}…`);
+        status(`Building ${this.scenePath}…`);
         await new Promise(r => setTimeout(r, 0));
-        this.buildLevel(S);
+        this.buildLevel(this.sceneCache.list);
         if (cut.objects.length && !this.objs.length && this.objMissing.length === cut.objects.length)
           this.warnings.push(`None of the ${cut.objects.length} pieces it moves (${[...new Set(this.objMissing)].slice(0, 3).join(', ')}…) are in this scene, so nothing moves. Hoover Dam's door and generator animations are like this: their CUTSCENE lines in LEVEL.CFG are commented out.`);
       } else if (cfg.scenes.length) this.warnings.push(`its scene (${cfg.scenes[0].path}) is not in this game folder: no level shown`);
@@ -239,50 +257,95 @@ export class CutsceneView {
     this.levelMeshes = []; this.chars = []; this.objs = []; this.cut = null;
   }
 
-  // Level geometry, built by the level tab's builder. Draws of the set pieces this cutscene moves are built as
-  // their own groups so they can follow their tracks.
-  buildLevel(S) {
+  // High Detail: the cutscene config's level scenes (levels\x\tranquility_main.gsc, _buildings, _pos, _vehicles:
+  // the console split scenes, which the PC hi-res set has as <NAME>_PC.GSC), looked up in the hi-res set first, then
+  // in the game folder; the folder is the level's LEVEL.CFG PATH (BARRICADETRANQUILITY's scenes live in
+  // TRANQUILITY2). None found: the LEVEL.CFG NEXTGEN list. null: nothing hi-res (the Normal scene is used).
+  async highDetailScenes(entry, cfg) {
+    const lv = cfg.scenes.filter(s => /^levels\//i.test(s.path));
+    const dir = entry.level || (lv[0] ? lv[0].path.split('/').slice(0, 2).join('/') : null);
+    if (!dir) return null;
+    const NG = await nextgenScenes(dir);
+    const folders = [...new Set([NG?.path, dir, ...lv.map(s => s.path.split('/').slice(0, -1).join('/'))].filter(Boolean))];
+    const listings = new Map();
+    const files = async d => {
+      if (!listings.has(d.toLowerCase())) { try { listings.set(d.toLowerCase(), (await api.list(d)).files); } catch { listings.set(d.toLowerCase(), []); } }
+      return listings.get(d.toLowerCase());
+    };
+    const find = async name => {
+      const want = `${name}_pc.gsc`.toLowerCase();
+      for (const d of [...folders.map(f => HIRES + f), ...folders]) {
+        const f = (await files(d)).find(x => x.name.toLowerCase() === want);
+        if (f) return joinPath(d, f.name);
+      }
+      return null;
+    };
+    const out = [], missing = [];
+    for (const s of lv) {
+      if (s.flags.includes('NORENDER') || s.flags.includes('NODRAW')) continue;
+      const name = s.path.split('/').pop().replace(/\.gsc$/i, '');
+      const p = await find(name);
+      if (p && !out.includes(p)) out.push(p); else if (!p) missing.push(name);
+    }
+    if (!out.length && NG) out.push(...NG.parts.map(p => p.path));
+    if (!out.length) { this.warnings.push('High detail: no hi-res scenes for this level, so the Normal scene is shown.'); return null; }
+    if (missing.length) this.warnings.push(`High detail: not found: ${missing.join(', ')}.`);
+    if (!out.some(p => p.startsWith(HIRES))) this.warnings.push('High detail: these scenes are the game folder\'s own copies (not in the hi-res set).');
+    return out;
+  }
+
+  // Level geometry from one or more scenes (High Detail: the split scenes, drawn together), built by the level
+  // tab's builder. Draws of the set pieces this cutscene moves are built as their own groups so they can follow
+  // their tracks. The sky / framing pass runs once over all scenes.
+  buildLevel(list) {
     const cut = this.cut;
-    const byName = new Map();
-    for (const ins of S.instances || []) if (ins.name) { const k = ins.name.toLowerCase(); if (!byName.has(k)) byName.set(k, ins); }
-    const moving = new Map(); // draw id -> object index in this.objs
+    const moving = list.map(() => new Map()); // per scene: draw id -> object index in this.objs
     this.objs = [];
     this.objMissing = [];
+    const byName = list.map(({ S }) => {
+      const m = new Map();
+      for (const ins of S.instances || []) if (ins.name) { const k = ins.name.toLowerCase(); if (!m.has(k)) m.set(k, ins); }
+      return m;
+    });
     for (const o of cut.objects) {
-      const ins = byName.get(o.name.toLowerCase());
-      if (!ins) { this.objMissing.push(o.name); continue; }
-      const so = S.objects[ins.object];
-      if (!so) { this.objMissing.push(o.name); continue; }
+      const si = byName.findIndex((m, k) => { const ins = m.get(o.name.toLowerCase()); return ins && list[k].S.objects[ins.object]; });
+      if (si < 0) { this.objMissing.push(o.name); continue; }
+      const S = list[si].S, ins = byName[si].get(o.name.toLowerCase()), so = S.objects[ins.object];
       // an object with several instances: its draws for this one sit at this instance's matrix
       let draws = so.draws;
       if ((so.instances?.length || 0) > 1) draws = draws.filter(di => { const m = S.draws[di].matrix; return m && Math.hypot(m[12] - ins.matrix[12], m[13] - ins.matrix[13], m[14] - ins.matrix[14]) < 0.01; });
-      draws = draws.filter(di => !moving.has(di));
+      draws = draws.filter(di => !moving[si].has(di));
       if (!o.block && !o.visibility?.length) continue; // listed but never moves or switches: stays in the level
-      const rec = { o, ins, draws, M0: ins.matrix, inv0: M4.invert3x4(ins.matrix), group: null };
-      for (const di of draws) moving.set(di, this.objs.length);
+      const rec = { o, ins, draws, S, scene: list[si].path, M0: ins.matrix, inv0: M4.invert3x4(ins.matrix), group: null };
+      for (const di of draws) moving[si].set(di, this.objs.length);
       this.objs.push(rec);
     }
-    const build = draws => {
-      // a mirrored root like the Viewport's, so the builder's boxes (sky, framing) are in the same space
+    const build = (sc, draws) => {
       const root = new THREE.Group();
       root.scale.z = -1;
-      const host = { gsc: Object.create(S, { draws: { value: draws } }), vp: { root }, texture: i => this.texture(S, i) };
+      const host = { gsc: Object.create(sc.S, { draws: { value: draws } }), vp: { root }, texture: i => this.texture(sc, i), noFinish: true };
       LevelView.prototype.buildGeometry.call(host);
       root.remove(host.geoGroup);
       return host;
     };
-    const stat = build(S.draws.filter(d => !moving.has(d.id)));
-    this.levelGroup = stat.geoGroup;
-    this.levelMeshes = stat.levelMeshes;
-    this.playBox = stat.playBox;
+    this.levelGroup = new THREE.Group();
+    this.levelMeshes = [];
+    list.forEach((sc, k) => {
+      const h = build(sc, sc.S.draws.filter(d => !moving[k].has(d.id)));
+      for (const m of h.levelMeshes) m.userData.scene = k; // index into sceneCache.list (faceDraw ids are its draws)
+      this.levelGroup.add(h.geoGroup);
+      this.levelMeshes.push(...h.levelMeshes);
+    });
     this.vp.root.add(this.levelGroup);
+    const fin = { vp: this.vp };
+    finishGeometry(fin, this.levelMeshes);
+    this.playBox = fin.playBox;
     // the sky dome hides everything from outside: draw it only while the camera is inside it
     this.skyMeshes = this.levelMeshes.filter(m => m.userData.sky);
     this.objGroup = new THREE.Group();
     for (const r of this.objs) {
       if (!r.draws.length) continue;
-      const h = build(r.draws.map(di => S.draws[di]));
-      for (const m of h.levelMeshes) { m.layers.set(0); m.userData.sky = false; }
+      const h = build(list.find(sc => sc.S === r.S), r.draws.map(di => r.S.draws[di]));
       r.group = h.geoGroup;
       r.group.matrixAutoUpdate = false;
       this.objGroup.add(r.group);
@@ -290,12 +353,12 @@ export class CutsceneView {
     this.vp.root.add(this.objGroup);
   }
 
-  texture(S, i) {
-    if (this.texCache.has(i)) return this.texCache.get(i);
-    const t = S.textures[i];
+  texture(sc, i) {
+    if (sc.tex.has(i)) return sc.tex.get(i);
+    const S = sc.S, t = S.textures[i];
     const tex = t && t.size && !t.cube ? ddsTexture(S.dds(t)) : null;
     if (tex && S.ps3 && tex.format === THREE.RGB_S3TC_DXT1_Format) { tex.format = THREE.RGBA_S3TC_DXT1_Format; tex.userData.hasAlpha = true; }
-    this.texCache.set(i, tex);
+    sc.tex.set(i, tex);
     return tex;
   }
 
@@ -311,12 +374,19 @@ export class CutsceneView {
         const entry = mv.charByName.get(name.toLowerCase());
         if (!entry) return { note: 'no character config with this name' };
         try {
-          const { modelPath, parents } = await loadCharacter(entry, mv.charByName);
-          let path = modelPath, note = '';
+          const ld = await loadCharacter(entry, mv.charByName);
+          // High detail: the hi-res model and DEPENDS parents where the set has them (animations stay the game's)
+          const d = this.high ? 'high' : 'normal', parents = ld.parents.map(p => forDetail(p, d));
+          let path = forDetail(ld.modelPath, d), note = '';
           let model = await loadModel(path, parents);
           if (bones && model.bones.length !== bones) {
             const alt = await siblingWithBones(path, bones);
             if (alt) { model = await loadModel(alt, parents); path = alt; note = `uses ${alt.split('/').pop()} (its skeleton matches)`; }
+            else if (path !== ld.modelPath) {
+              // the hi-res file's skeleton doesn't fit this track: the normal model (and its parents) does better
+              const m2 = await loadModel(ld.modelPath, ld.parents);
+              if (m2.bones.length === bones) { model = m2; path = ld.modelPath; note = 'hi-res model\'s skeleton doesn\'t match the track: normal model shown'; }
+            }
           }
           return { model, path, note };
         } catch (e) { return { note: e.message }; }
@@ -612,12 +682,12 @@ export class CutsceneView {
       <tr><td>File</td><td class="mono">${esc(this.entry.cu2)}</td></tr>
       <tr><td>Length</td><td>${cut.frames} frames @ ${cut.fps} fps = ${cut.seconds.toFixed(1)} s</td></tr>
       <tr><td>Version</td><td>${cut.version}</td></tr>
-      <tr><td>Level</td><td class="mono">${esc(this.scenePath || '(none)')}</td></tr>
+      <tr><td>Level</td><td class="mono">${esc(this.scenePath || '(none)')}${this.scenePath && this.sceneCache.list?.some(x => x.path.startsWith(HIRES)) ? ' <span class="tag hires">HI-RES</span>' : ''}</td></tr>
       <tr><td>Sound</td><td>${this.sound ? `<span class="mono">${esc(this.sound.source)}</span> (${this.sound.seconds.toFixed(1)} s)` : '<span class="hint">none</span>'}</td></tr>
       <tr><td>Set pieces</td><td>${listed} listed · ${found} move or switch here${this.objMissing.length ? ` · <span class="warn" title="${esc([...new Set(this.objMissing)].join(', '))}">${this.objMissing.length} not in this scene</span>` : ''}</td></tr>
     </table>`;
     $('c-shots').innerHTML = cut.shots.map((s, i) => `<div class="item" data-from="${s.from}">Shot ${i + 1}<span class="sub">frames ${s.from}–${s.to - 1} · ${s.camera == null ? 'no camera' : 'camera ' + s.camera}</span></div>`).join('') || '<div class="hint">No cameras.</div>';
-    $('c-charlist').innerHTML = this.chars.map(r => `<div class="item" data-from="${r.c.from}" title="${esc(r.path || '')}">${esc(r.c.name)}<span class="sub">${r.c.from}–${r.c.to - 1}${r.model ? '' : ' · <span class="warn">not shown</span>'}</span>${r.note ? `<div class="hint ${r.model ? '' : 'warn'}" style="white-space:normal">${esc(r.note)}</div>` : ''}</div>`).join('') || '<div class="hint">No characters.</div>';
+    $('c-charlist').innerHTML = this.chars.map(r => `<div class="item" data-from="${r.c.from}" title="${esc(r.path || '')}">${esc(r.c.name)}${r.path?.startsWith(HIRES) ? ' <span class="tag hires">HI-RES</span>' : ''}<span class="sub">${r.c.from}–${r.c.to - 1}${r.model ? '' : ' · <span class="warn">not shown</span>'}</span>${r.note ? `<div class="hint ${r.model ? '' : 'warn'}" style="white-space:normal">${esc(r.note)}</div>` : ''}</div>`).join('') || '<div class="hint">No characters.</div>';
     const notes = [...this.warnings, `Field of view isn't stored in the files: ${DEFAULT_FOV}° is assumed (slider).`,
       'Not shown: particles and effects, lights.'];
     $('c-notes').innerHTML = notes.map(n => `<div>${esc(n)}</div>`).join('');

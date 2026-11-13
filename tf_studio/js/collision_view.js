@@ -125,7 +125,7 @@ export class CollisionLayer {
       const P = S.readPositions(d); if (M) transformPoints(P, M);
       const base = pos.length / 3;
       for (let i = 0; i < P.length; i++) pos.push(P[i]);
-      for (const t of stripToTriangles(S.ib(0), d.start, d.prims, d.count)) idx.push(t + base);
+      for (const t of stripToTriangles(S.ib(d.ib ?? 0), d.start, d.prims, d.count)) idx.push(t + base);
     }
     if (idx.length) {
       const bg = new THREE.BufferGeometry();

@@ -8,7 +8,7 @@ Mapped 2026-11-06 from `LEVELS\HOOVERINT\HOOVERINT_PC.GSC`, checked against all 
   `u16 ibCount` {size, data}, padding, then `NU20` at `modelOffset+4`.
 - `ghg_lib.GHG(...).build()` rebuilds **all 10 PC GSCs byte for byte**. This only covers the container;
   the NU20 block is copied as-is.
-- PC levels use 4–16 VBs and a **single shared u16 IB**.
+- PC levels use 4–16 VBs and a **single shared u16 IB** (Normal detail). Five hi-res scenes have **two IBs** (CITY_BUILDINGS, CITY, HOOVERINT_MAIN, HOOVERINT_TUNNELS, QATAR_GROUND): each draw record's +1C picks one (2026-11-12).
 
 ## NU20 block
 - **Header:** `"NU20"`, `i32 −length`, `i32 version`, 0. Version is **1 on PC** and **2 on Wii**.
@@ -78,8 +78,8 @@ Mapped 2026-11-06 from `LEVELS\HOOVERINT\HOOVERINT_PC.GSC`, checked against all 
 | +08 | 8 × `0xFF` |
 | +10 | `baseVertex` |
 | +14 | `vertexCount` |
-| +18 | `startIndex` into the shared IB |
-| +1C | 0 |
+| +18 | `startIndex` into the IB chosen by +1C |
+| +1C | **IB index** ✅ (0 in Normal scenes; 0 or 1 in the hi-res scenes with two IBs) |
 | +20 | 1 |
 | **+24** | **VB index** ✅ (`max(base+count) × stride` = that VB's exact size) |
 | +28…+44 | 8 × −1 (bone palette) |
@@ -349,3 +349,21 @@ right objects, block skips unchanged, rebuild stable.
   `CreateModule "#Creature" "#<name>" "#Spline=<spline>" "#count=N" "#maxalive=M" "#Type=<character>" …`
   (keys in either case). They spawn along the named `SPLINE.DAT` spline.
 - 207 such lines across the levels. The character must be INCLUDEd by the level's `CREATURES.CFG`.
+
+## DNO2 polygon u16 +8 = extent selectors ✅ (2026-11-11, exe 0x62A2E2; matches all 189,678 stock polygons)
+- Six 2-bit corner indices (0–3 into a b c d): **min x** bits 0–1, **min y** 2–3, **min z** 4–5, **max x** 6–7,
+  **max y** 8–9, **max z** 10–11. The point-in-polygon query rejects early with them (px < V[minx].x, pz < V[minz].z,
+  px > V[maxx].x, pz > V[maxz].z).
+- **Generated collision must compute this per polygon.** A constant value makes most polygons holes. This is the
+  likely cause of the low-res Crater build's "no collision even with stock winding".
+- Polygon surface: per-poly byte → expanded surface record (0x1C B); its u16 at +0x18 is ANDed with the query mask
+  `[0x2BF2A94]`, and a set bit skips the polygon.
+- The 2-byte per-poly block (0–63 each, floors mostly 63/63) isn't used by the point query.
+
+## Swapping a GSC while the game runs crashes ✅ (2026-11-12, from the Armada level port)
+- The running game keeps a level file's layout from its first read in the session. Replacing the file and reloading
+  the level (F1 → Go) reads the new bytes at the old offsets.
+- Seen as an access violation at 0x56A60E (`[[scene+0x110]+0x6C]`) in the Level.par particle loader
+  (0x4F1AC3 → 0x64F2E0 → 0x64EAF0 → 0x64B7A0). The bad pointer was exactly the new file's word at the old file's
+  GSNH+0x110 offset.
+- **Close the game before installing a rebuilt GSC.**

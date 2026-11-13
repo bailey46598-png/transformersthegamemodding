@@ -11,10 +11,14 @@ import { addObjectCopies } from './scene_edit.js';
 import { exportObjectGLB, readEditedGLB, applyMeshEdits } from './mesh_io.js';
 import { PropLayer } from './prop_layer.js';
 import { SpawnLayer } from './spawn_layer.js';
+import { ShotLayer } from './shot_layer.js';
+import { RecordingLayer } from './rec_layer.js';
 import { parseBlockIni, writeBlockIni, iniGet, iniNum, iniSet, unquote, parseSplineDat, writeSplineDat } from './text_formats.js';
 import { computeBoundsTree, disposeBoundsTree, acceleratedRaycast } from 'three-mesh-bvh';
 import { api, $, status, esc, fmt, joinPath, Viewport, ddsTexture } from './common.js';
 import { Navigator, Minimap } from './navigator.js';
+import { loadHires, hiresAvailable, isHires, HIRES } from './hires.js';
+import { nextgenScenes } from './level_scenes.js';
 
 // BVH-accelerated raycasts: cursor zoom and clicking on a 500k-triangle level stay instant
 THREE.BufferGeometry.prototype.computeBoundsTree = computeBoundsTree;
@@ -38,29 +42,42 @@ export class LevelView {
     this.nav = new Navigator(this.vp, {
       pick: (ray, o) => this.pickPoint(ray, o),
       active: () => !$('tab-level').classList.contains('hidden'),
-      bookmarkKey: () => 'tfstudio.views.' + (this.gscPath || this.dir || ''),
+      bookmarkKey: () => 'tfstudio.views.' + (this.parts ? this.dir + '@NEXTGEN' : this.gscPath || this.dir || ''),
       notify: m => status(m),
     });
     this.mini = new Minimap(this.vp, this.nav, $('l-canvas'));
     this.coll = new CollisionLayer(this);
     this.propLayer = new PropLayer(this);
     this.spawnLayer = new SpawnLayer(this);
+    this.shotLayer = new ShotLayer(this);
+    this.recLayer = new RecordingLayer(this.shotLayer);
     this.copies = [];
     this.nav.on(() => this.renderReadout());
     this.vp.camera.layers.enable(2);
     // from outside, the sky dome would hide the whole level: draw it only while the camera is inside
     this.vp.onFrame.push(() => {
-      for (const m of this.levelMeshes || []) if (m.userData.sky) m.visible = m.userData.skyBox.containsPoint(this.vp.camera.position);
+      for (const m of this.allMeshes()) if (m.userData.sky) m.visible = m.userData.skyBox.containsPoint(this.vp.camera.position);
     });
     this.bindUI();
   }
 
   // first surface hit by a ray (world space). top: for "ground below this point", ignore the sky dome.
   pickPoint(ray, { top = false } = {}) {
-    if (!this.levelMeshes?.length || !this.geoGroup?.visible) return null;
+    const meshes = this.shownMeshes().filter(m => !top || !m.userData.sky);
+    if (!meshes.length) return null;
     ray.firstHitOnly = true;
-    const meshes = top ? this.levelMeshes.filter(m => !m.userData.sky) : this.levelMeshes;
     return ray.intersectObjects(meshes, false)[0]?.point || null;
+  }
+
+  // Every level mesh: the edited scene's (levelMeshes) plus, when a level's NEXTGEN scenes are loaded together,
+  // the other scenes' (extraMeshes, drawn and picked but not edited in place).
+  allMeshes() { return this.extraMeshes?.length ? [...(this.levelMeshes || []), ...this.extraMeshes] : this.levelMeshes || []; }
+  shownMeshes() { return this.allMeshes().filter(m => m.parent?.visible && m.parent.parent?.visible !== false); }
+  // the scenes on screen, the edited one first: { gsc, texture(i) } (prop models can come from any of them)
+  sceneList() {
+    if (!this.parts) return this.gsc ? [{ gsc: this.gsc, texture: i => this.texture(i) }] : [];
+    return [{ gsc: this.gsc, texture: i => this.texture(i) },
+      ...this.parts.filter((p, k) => k !== this.editPart).map(p => ({ gsc: p.gsc, texture: i => sceneTexture(p.gsc, p.texCache, i) }))];
   }
 
   // game coordinates <-> three.js world (the root is mirrored in Z)
@@ -115,7 +132,19 @@ export class LevelView {
     const dir = joinPath('LEVELS', $('l-level').value);
     const L = await api.list(dir);
     const g = L.files.filter(f => /\.gsc$/i.test(f.name));
-    $('l-scene').innerHTML = g.map(f => `<option value="${esc(f.name)}">${esc(f.name)} (${(f.size / 1048576).toFixed(1)} MB)</option>`).join('') || '<option value="">(no .GSC here: maps only)</option>';
+    // the hi-res set's scenes for this level (High Detail: bigger textures and the NEXTGEN split scenes)
+    let hi = [];
+    await loadHires();
+    if (hiresAvailable()) try { hi = (await api.list(HIRES + dir)).files.filter(f => /\.gsc$/i.test(f.name)); } catch { /* none for this level */ }
+    // what the game loads in High Detail: every scene in LEVEL.CFG's PLATFORM NEXTGEN list, all at once
+    this.nextgen = await nextgenScenes(dir);
+    const NG = this.nextgen, ngMB = NG ? NG.parts.reduce((n, p) => n + p.size, 0) / 1048576 : 0;
+    const ngOpt = NG && (NG.parts.length > 1 || NG.fallback)
+      ? `<optgroup label="As the game loads it (High Detail)"><option value="@NEXTGEN">${NG.fallback ? `${esc(NG.parts[0].name)} (NEXTGEN scenes missing: DEFAULTSCENE)`
+        : `All ${NG.parts.length} NEXTGEN scenes together${NG.missing.length ? ` (${NG.missing.length} missing)` : ''}`} · ${ngMB.toFixed(0)} MB</option></optgroup>` : '';
+    $('l-scene').innerHTML = ngOpt + g.map(f => `<option value="${esc(f.name)}">${esc(f.name)} (${(f.size / 1048576).toFixed(1)} MB)</option>`).join('')
+      + (hi.length ? `<optgroup label="Hi-res set (High Detail)">${hi.map(f => `<option value="${esc(HIRES + joinPath(dir, f.name))}">${esc(f.name)} · hi-res (${(f.size / 1048576).toFixed(1)} MB)</option>`).join('')}</optgroup>` : '')
+      || '<option value="">(no .GSC here: maps only)</option>';
     this.levelFiles = L.files.map(f => f.name);
   }
 
@@ -125,7 +154,7 @@ export class LevelView {
     $('l-filter').oninput = () => this.renderList();
     $('l-list').onclick = e => { const it = e.target.closest('.item'); if (it) { this.select(JSON.parse(it.dataset.sel)); this.focus(); } };
     for (const id of ['l-geo', 'l-tex', 'l-place', 'l-trig', 'l-spl', 'l-labels']) $(id).onchange = () => this.applyToggles();
-    $('l-coll').onchange = e => { this.coll.setVisible(e.target.checked); if (e.target.checked && !this.coll.available && this.gsc) status(`No collision in this scene: ${this.coll.summary()}.`); };
+    $('l-coll').onchange = e => { this.setCollision(e.target.checked); if (e.target.checked && !this.coll.available && this.gsc) status(`No collision in this scene: ${this.coll.summary()}.`); };
     $('l-mode').onchange = () => this.attachGizmo();
     $('l-props').onchange = () => this.applyToggles();
     $('l-spawns').onchange = () => this.applyToggles();
@@ -173,12 +202,15 @@ export class LevelView {
   async load() {
     if (this.dirty.size && !confirm('Discard unsaved changes and load?')) return;
     const dir = joinPath('LEVELS', $('l-level').value), scene = $('l-scene').value;
+    // reloading the same combined level (after a save, Reload from disk) keeps the part being edited
+    const keepEdit = this.parts && this.dir === dir ? this.parts[this.editPart].name : null;
     this.clear();
     this.dir = dir;
     try {
-      if (scene) {
+      if (scene === '@NEXTGEN') await this.loadCombined(keepEdit);
+      else if (scene) {
         status(`Reading ${scene}…`);
-        this.gscPath = joinPath(dir, scene);
+        this.gscPath = isHires(scene) ? scene : joinPath(dir, scene);
         const t0 = performance.now();
         this.gsc = openScene(await api.bytes(this.gscPath), GSCScene);
         status(`Building ${this.gsc.draws.length.toLocaleString()} draws…`);
@@ -192,8 +224,101 @@ export class LevelView {
       $('l-empty').classList.add('hidden');
       this.renderInfo(); this.renderList(); this.renderDirty(); this.applyToggles();
       this.frameAll();
-      status(`${$('l-level').value} loaded.`);
+      const NG = this.parts && this.nextgen;
+      status(`${$('l-level').value} loaded.` + (NG ? ` ${this.parts.length} scenes drawn together as in High Detail; editing ${this.parts[this.editPart].name}.`
+        + (NG.missing.length ? ` Missing: ${NG.missing.join(', ')}.` : '') : ''));
     } catch (e) { console.error(e); status(`${dir}: ${e.message}`, true); }
+  }
+
+  // ------------------------------------------------------------ High Detail: all NEXTGEN scenes at once
+  // The game loads every SCENE of LEVEL.CFG's NEXTGEN block into one world (Main = ground and static set, Buildings =
+  // destructible buildings, Vehicles, POs = physics-object models). They share world space, so they are simply drawn
+  // together. One of them is "edited" (this.gsc, with all the usual editing); the others are drawn and picked only.
+  async loadCombined(keepEdit) {
+    const NG = this.nextgen;
+    if (!NG) throw new Error('no NEXTGEN scene list in LEVEL.CFG');
+    this.parts = [];
+    for (const [k, p] of NG.parts.entries()) {
+      status(`Reading ${p.name} (${k + 1}/${NG.parts.length}, ${(p.size / 1048576).toFixed(0)} MB)…`);
+      this.parts.push({ ...p, gsc: openScene(await api.bytes(p.path), GSCScene), visible: true, texCache: new Map() });
+    }
+    const keep = keepEdit ? this.parts.findIndex(p => p.name === keepEdit) : -1;
+    this.editPart = keep >= 0 ? keep : 0;
+    status(`Building ${this.parts.reduce((n, p) => n + p.gsc.draws.length, 0).toLocaleString()} draws from ${this.parts.length} scenes…`);
+    await new Promise(r => setTimeout(r, 0));
+    this.buildParts();
+  }
+
+  buildParts() {
+    const t0 = performance.now();
+    const E = this.parts[this.editPart];
+    this.gsc = E.gsc; this.gscPath = E.path;
+    this.extraGroup = new THREE.Group(); this.extraGroup.name = 'other scenes';
+    this.vp.root.add(this.extraGroup);
+    this.extraMeshes = [];
+    this.parts.forEach((p, k) => {
+      p.coll?.dispose(); p.coll = null;
+      if (k === this.editPart) return;
+      // the same builder as the edited scene, into its own group; the sky/framing pass runs once for all below
+      const host = { gsc: p.gsc, vp: { root: this.extraGroup }, texture: i => sceneTexture(p.gsc, p.texCache, i), noFinish: true };
+      LevelView.prototype.buildGeometry.call(host);
+      for (const m of host.levelMeshes) m.userData.part = k;
+      p.group = host.geoGroup; p.meshes = host.levelMeshes; p.triCount = host.triCount; p.drawPlace = host.drawPlace;
+      this.extraMeshes.push(...host.levelMeshes);
+      p.coll = new CollisionLayer({ vp: this.vp, gsc: p.gsc, sel: null, copies: [] });
+      p.coll.load(p.gsc);
+    });
+    this.texCache = E.texCache; this.keepTexCache = true; // the part's decoded textures carry over
+    this.buildGeometry();
+    this.keepTexCache = false;
+    for (const m of this.levelMeshes) m.userData.part = this.editPart;
+    E.group = this.geoGroup; E.meshes = this.levelMeshes; E.triCount = this.triCount;
+    this.coll.load(this.gsc);
+    this.setCollision($('l-coll').checked);
+    console.log('combined level built in', Math.round(performance.now() - t0), 'ms');
+  }
+
+  // collision overlay of every scene on screen
+  setCollision(on) {
+    this.coll.setVisible(on && (this.parts?.[this.editPart].visible ?? true));
+    for (const p of this.parts || []) p.coll?.setVisible(on && p.visible);
+  }
+
+  // Edit another of the combined scenes: it becomes this.gsc (rebuilt with the usual editing), the current one is
+  // drawn as a plain part. Unsaved changes to the current scene are discarded (it is read back from disk).
+  async setEditPart(k, selectObject = null) {
+    if (!this.parts || k === this.editPart) return;
+    const old = this.parts[this.editPart];
+    if (this.dirty.has('gsc') || this.copies.length) {
+      if (!confirm(`Discard the unsaved changes to ${old.name}?`)) return;
+      status(`Reading ${old.name} back…`);
+      old.gsc = openScene(await api.bytes(old.path), GSCScene);
+      old.texCache = new Map(); // a replaced texture may be cached
+    } else old.gsc = this.gsc; // same file contents, possibly a rebuilt (adopted) copy
+    this.select(null);
+    for (const c of this.copies || []) this.removeCopyPreview(c);
+    this.copies = [];
+    this.dirty.delete('gsc');
+    this.origVerts = new Map(); this.origMats = new Map(); this.hidden = new Set(); this.replacedTex = new Set();
+    this.disposeGeometry();
+    this.editPart = k;
+    status(`Building ${this.parts[k].name} for editing…`);
+    await new Promise(r => setTimeout(r, 0));
+    this.buildParts();
+    if (this.propLayer.doc) this.propLayer.build();
+    this.applyToggles(); this.renderInfo(); this.renderDirty(); this.renderList();
+    if (selectObject != null) this.select({ kind: 'object', i: selectObject });
+    status(`Editing ${this.parts[k].name}. Its changes save to ${this.parts[k].path.split('/').pop()}.`);
+  }
+
+  disposeGeometry() {
+    for (const g of [this.geoGroup, this.extraGroup]) if (g) {
+      this.vp.root.remove(g);
+      g.traverse(x => { x.geometry?.disposeBoundsTree?.(); x.geometry?.dispose(); });
+    }
+    this.coll.dispose();
+    for (const p of this.parts || []) { p.coll?.dispose(); p.coll = null; p.group = null; p.meshes = []; }
+    this.geoGroup = this.extraGroup = null; this.levelMeshes = []; this.extraMeshes = [];
   }
 
   clear() {
@@ -201,12 +326,15 @@ export class LevelView {
     this.coll.dispose(); this.coll.D0 = null;
     this.propLayer.dispose();
     this.spawnLayer.dispose();
+    this.shotLayer.release(); this.shotLayer.stop(); this.shotLayer.clearActors(); this.shotLayer.seq = -1;
     for (const c of this.copies || []) this.removeCopyPreview(c);
     this.copies = [];
-    for (const g of [this.geoGroup, this.markGroup]) if (g) {
+    for (const g of [this.geoGroup, this.extraGroup, this.markGroup]) if (g) {
       this.vp.root.remove(g);
       g.traverse(x => { x.geometry?.dispose(); if (x.isCSS2DObject) x.element.remove(); });
     }
+    for (const p of this.parts || []) p.coll?.dispose();
+    this.parts = null; this.extraGroup = null; this.extraMeshes = []; this.levelMeshes = [];
     this.gsc = null; this.gscPath = null; this.geoGroup = null; this.markGroup = null;
     this.placements = this.triggers = this.splines = null;
     this.dirty.clear(); this.origVerts = new Map(); this.origMats = new Map(); this.hidden = new Set(); this.replacedTex = new Set();
@@ -216,31 +344,41 @@ export class LevelView {
     const S = this.gsc;
     const byTex = new Map();
     this.rangeDraws = new Map(); // "vb:base:count" -> draw ids sharing those vertices
+    const modes = drawModes(S);
     for (const d of S.draws) {
       const key = `${d.vb}:${d.base}:${d.count}`;
       if (!this.rangeDraws.has(key)) this.rangeDraws.set(key, []);
       this.rangeDraws.get(key).push(d.id);
       d.key = key;
-      const tex = S.materials[d.material]?.tex ?? -1;
-      if (!byTex.has(tex)) byTex.set(tex, []);
-      byTex.get(tex).push(d);
+      // one mesh per texture and way of drawing: opaque, a blended terrain layer pass, or multi-layer terrain
+      const m = S.materials[d.material], tex = m?.tex ?? -1, mode = modes[d.id];
+      if (mode === 'h') continue; // the multi-pass copy of ground drawn single-pass (edits still move it in the file)
+      const am = m?.alpha; // the material's alpha mode (undefined for PS3 scenes)
+      const gk = (mode === 'm' ? `m:${tex}:${m.layers.join(',')}` : `${mode}:${tex}`) + `:a${am ?? '?'}`;
+      if (!byTex.has(gk)) byTex.set(gk, { tex, mode, am, layers: mode === 'm' ? m.layers : null, draws: [] });
+      byTex.get(gk).draws.push(d);
     }
     this.geoGroup = new THREE.Group();
     this.drawPlace = new Array(S.draws.length);
-    this.texCache = new Map();
+    if (!this.keepTexCache) this.texCache = new Map();
     this.levelMeshes = [];
     this.triCount = 0;
-    for (const [tex, draws] of byTex) {
+    for (const { tex, mode, am, layers, draws } of byTex.values()) {
       const geos = draws.map(d => S.drawGeometry(d));
       let nv = 0, nt = 0;
       for (const g of geos) { nv += g.P.length / 3; nt += g.tris.length; }
       if (!nt) continue;
-      const P = new Float32Array(nv * 3), UV = new Float32Array(nv * 2), C = new Float32Array(nv * 3), I = new Uint32Array(nt), faceDraw = new Int32Array(nt / 3);
+      const nc = mode === 'b' ? 4 : 3;
+      const P = new Float32Array(nv * 3), UV = new Float32Array(nv * 2), C = new Float32Array(nv * nc), I = new Uint32Array(nt), faceDraw = new Int32Array(nt / 3);
+      const W = mode === 'm' ? new Float32Array(nv * 3) : null;
       let v = 0, t = 0;
       const mesh = new THREE.Mesh();
       draws.forEach((d, k) => {
         const g = geos[k], n = g.P.length / 3;
-        P.set(g.P, v * 3); UV.set(g.UV, v * 2); C.set(g.C, v * 3);
+        P.set(g.P, v * 3); UV.set(g.UV, v * 2);
+        if (nc === 3) C.set(g.C, v * 3);
+        else for (let i = 0; i < n; i++) { C[(v + i) * 4] = g.C[i * 3]; C[(v + i) * 4 + 1] = g.C[i * 3 + 1]; C[(v + i) * 4 + 2] = g.C[i * 3 + 2]; C[(v + i) * 4 + 3] = g.A ? g.A[i] : 1; }
+        if (W && g.W) W.set(g.W, v * 3);
         for (let i = 0; i < g.tris.length; i++) I[t + i] = g.tris[i] + v;
         faceDraw.fill(d.id, t / 3, (t + g.tris.length) / 3);
         this.drawPlace[d.id] = { mesh, v, n, t, nt: g.tris.length };
@@ -249,63 +387,43 @@ export class LevelView {
       const geo = new THREE.BufferGeometry();
       geo.setAttribute('position', new THREE.BufferAttribute(P, 3));
       geo.setAttribute('uv', new THREE.BufferAttribute(UV, 2));
-      geo.setAttribute('color', new THREE.BufferAttribute(C, 3));
+      geo.setAttribute('color', new THREE.BufferAttribute(C, nc));
+      if (W) geo.setAttribute('blendw', new THREE.BufferAttribute(W, 3));
       geo.setIndex(new THREE.BufferAttribute(I, 1));
       geo.computeBoundingSphere();
       const map = tex >= 0 ? this.texture(tex) : null;
       const mat = new THREE.MeshBasicMaterial({ vertexColors: true, map, side: THREE.DoubleSide });
       mat.userData.tex = map;
-      if (map?.userData.hasAlpha) mat.alphaTest = 0.5;
+      if (am != null && mode !== 'm') {
+        // the material's alpha mode decides: 0 = opaque, whatever the texture's alpha holds (City's window facades
+        // keep a reflection mask there: blended, they turned see-through); 1-3 = blended by texture x vertex alpha
+        // (High Detail roads are a DXT5 dirt layer a few cm above the ground). Depth is still written so a blended
+        // surface hides what is behind it.
+        if (am) Object.assign(mat, { transparent: true, alphaTest: 0.02 });
+      } else if (map?.userData.hasAlpha) {
+        // PS3 scenes (no alpha mode read): DXT1's 1-bit alpha is a cut-out, DXT3/DXT5 alpha is coverage
+        const smooth = map.format === THREE.RGBA_S3TC_DXT5_Format || map.format === THREE.RGBA_S3TC_DXT3_Format;
+        if (smooth && mode !== 'm') Object.assign(mat, { transparent: true, alphaTest: 0.02 });
+        else mat.alphaTest = 0.5;
+      }
+      if (mode === 'b') {
+        // a terrain layer drawn over the same vertices as the layer below, its vertex alpha = its weight (the game
+        // blends it on; drawn solid, the coincident layers z-fight into rings and stripes)
+        Object.assign(mat, { transparent: true, depthWrite: false, alphaTest: 0 });
+        mesh.renderOrder = 1 + draws[0].id / Math.max(1, S.draws.length); // layers go on in the file's order
+      }
+      if (mode === 'm') layerShader(mat, layers.map(l => (l >= 0 ? this.texture(l) : null)));
       mesh.geometry = geo; mesh.material = mat;
-      mesh.userData = { faceDraw, tex };
+      mesh.userData = { faceDraw, tex, mode };
       this.geoGroup.add(mesh);
       this.levelMeshes.push(mesh);
       this.triCount += nt / 3;
     }
     this.vp.root.add(this.geoGroup);
-    this.vp.root.updateMatrixWorld(true);
-    // the sky dome wraps everything: flag it so "ground below" lookups and the minimap framing skip it
-    const all = new THREE.Box3().setFromObject(this.geoGroup), A = all.getSize(new THREE.Vector3());
-    const xs = [], ys = [], zs = [], w = new THREE.Vector3();
-    for (const m of this.levelMeshes) {
-      m.geometry.computeBoundsTree();
-      const b = new THREE.Box3().setFromObject(m), s = b.getSize(new THREE.Vector3());
-      m.userData.sky = s.y > A.y * 0.45 && s.x > A.x * 0.5 && s.z > A.z * 0.5;
-      if (m.userData.sky) {
-        // layer 2: the main camera sees it (only while inside it), the minimap and raycasts don't
-        m.layers.set(2); m.userData.skyBox = b;
-        continue;
-      }
-      // sample vertices: the busy area, not the far-reaching water/ground planes, sets the framing
-      const P = m.geometry.attributes.position, step = Math.max(1, Math.floor(P.count / 2000));
-      for (let i = 0; i < P.count; i += step) { w.fromBufferAttribute(P, i).applyMatrix4(m.matrixWorld); xs.push(w.x); ys.push(w.y); zs.push(w.z); }
-    }
-    const q = (a, f) => { a.sort((x, y) => x - y); return a[Math.min(a.length - 1, Math.floor(a.length * f))]; };
-    this.playBox = xs.length
-      ? new THREE.Box3(new THREE.Vector3(q(xs, 0.01), q(ys, 0.01), q(zs, 0.01)), new THREE.Vector3(q(xs, 0.99), q(ys, 0.99), q(zs, 0.99)))
-      : all;
-    // Cloud layers (an alpha texture on a mesh that sits wholly above the level, e.g. Tranquility's 4,000-unit
-    // sheet at 212-1,050 up) are blended in the game; drawn as cut-outs they look like floating camouflage
-    for (const m of this.levelMeshes) {
-      if (m.userData.sky || !m.material.map?.userData.hasAlpha) continue;
-      const b = new THREE.Box3().setFromObject(m);
-      if (b.min.y > this.playBox.max.y + 50) {
-        Object.assign(m.material, { transparent: true, alphaTest: 0, depthWrite: false });
-        m.material.needsUpdate = true;
-        m.userData.cloud = true;
-      }
-    }
+    if (!this.noFinish) finishGeometry(this, [...this.levelMeshes, ...(this.extraMeshes || [])]);
   }
 
-  texture(i) {
-    if (this.texCache.has(i)) return this.texCache.get(i);
-    const t = this.gsc.textures[i];
-    const tex = t && t.size && !t.cube ? ddsTexture(this.gsc.dds(t)) : null;
-    // PS3 cut-outs (pylons, fences, foliage) are DXT1 with 1-bit alpha: keep it, so the holes aren't drawn black
-    if (tex && this.gsc.ps3 && tex.format === THREE.RGB_S3TC_DXT1_Format) { tex.format = THREE.RGBA_S3TC_DXT1_Format; tex.userData.hasAlpha = true; }
-    this.texCache.set(i, tex);
-    return tex;
-  }
+  texture(i) { return sceneTexture(this.gsc, this.texCache, i); }
 
   async loadMaps() {
     const has = n => this.levelFiles?.find(f => f.toLowerCase() === n.toLowerCase());
@@ -320,6 +438,7 @@ export class LevelView {
     this.buildMarkers();
     await this.propLayer.load(this.dir, this.levelFiles || []);
     await this.spawnLayer.load(this.dir);
+    this.shotLayer.load(); this.shotLayer.renderPanel(); this.recLayer.close();
   }
 
   // ------------------------------------------------------------ markers
@@ -391,8 +510,9 @@ export class LevelView {
   }
 
   applyToggles() {
-    if (this.geoGroup) this.geoGroup.visible = $('l-geo').checked;
-    for (const m of this.levelMeshes || []) {
+    if (this.geoGroup) this.geoGroup.visible = $('l-geo').checked && (this.parts?.[this.editPart].visible ?? true);
+    for (const p of this.parts || []) if (p.group && p.group !== this.geoGroup) p.group.visible = $('l-geo').checked && p.visible;
+    for (const m of this.allMeshes()) {
       const t = $('l-tex').checked ? m.material.userData.tex : null;
       if (m.material.map !== t) { m.material.map = t; m.material.needsUpdate = true; }
     }
@@ -445,8 +565,14 @@ export class LevelView {
     if (hs) return this.select({ kind: 'spawn', i: hs.i });
     const hp = this.propLayer.pick(ray);
     let hg = null;
-    if (this.geoGroup?.visible) { ray.firstHitOnly = true; hg = ray.intersectObjects(this.levelMeshes, false)[0]; }
+    const shown = this.shownMeshes();
+    if (shown.length) { ray.firstHitOnly = true; hg = ray.intersectObjects(shown, false)[0]; }
     if (hp && (!hg || hp.hit.distance <= hg.distance + 0.05)) return this.select({ kind: 'prop', i: hp.i });
+    const k = hg?.object.userData.part;
+    if (hg && this.parts && k !== this.editPart) { // another of the combined scenes: view-only until it is edited
+      const S = this.parts[k].gsc;
+      return this.select({ kind: 'part', part: k, i: S.draws[hg.object.userData.faceDraw[hg.faceIndex]].object });
+    }
     if (hg) return this.select({ kind: 'object', i: this.gsc.draws[hg.object.userData.faceDraw[hg.faceIndex]].object });
     this.select(null);
   }
@@ -457,6 +583,7 @@ export class LevelView {
     for (const el of document.querySelectorAll('#l-canvas .label.sel')) el.classList.remove('sel');
     if (!s) { this.gizmo.detach(); this.propLayer.highlight(null); this.renderSel(); this.renderList(); this.coll.updateHighlight(); return; }
     if (s.kind === 'object') this.beginObject(s.i);
+    if (s.kind === 'part') this.outlinePartObject(s.part, s.i);
     if (s.kind === 'placement') this.placeObjs[s.i].children[0].element.classList.add('sel');
     if (s.kind === 'trigger') this.trigObjs[s.i].userData.label.element.classList.add('sel');
     if (s.kind === 'spline') this.splObjs[s.i].userData.label.element.classList.add('sel');
@@ -468,7 +595,7 @@ export class LevelView {
 
   attachGizmo() {
     const s = this.sel;
-    if (!s || s.kind === 'spawn') return this.gizmo.detach(); // a spawn moves with its spline
+    if (!s || s.kind === 'spawn' || s.kind === 'part') return this.gizmo.detach(); // a spawn moves with its spline
     const rot = $('l-mode').value === 'rotate' && (s.kind === 'object' || s.kind === 'trigger' || s.kind === 'copy' || s.kind === 'prop');
     this.gizmo.setMode(rot ? 'rotate' : 'translate');
     this.gizmo.showX = this.gizmo.showZ = !rot; this.gizmo.showY = true;
@@ -640,11 +767,19 @@ export class LevelView {
     pl.mesh.geometry.attributes.position.needsUpdate = true;
   }
 
-  buildHighlight(o) {
+  // an object of another combined scene (view-only): outline it and keep its box for Focus
+  outlinePartObject(k, o) {
+    const p = this.parts[k];
+    this.buildHighlight(o, p.gsc, p.drawPlace);
+    this.highlight.geometry.computeBoundingBox();
+    this.partBox = this.highlight.geometry.boundingBox.clone();
+  }
+
+  buildHighlight(o, S = this.gsc, places = this.drawPlace) {
     if (this.highlight) { this.vp.root.remove(this.highlight); this.highlight.geometry.dispose(); }
-    const S = this.gsc, pos = [], idx = [];
+    const pos = [], idx = [];
     for (const di of S.objects[o].draws) {
-      const pl = this.drawPlace[di]; if (!pl) continue;
+      const pl = places[di]; if (!pl) continue;
       const P = pl.mesh.geometry.attributes.position.array, I = pl.mesh.geometry.index.array, base = pos.length / 3;
       for (let i = pl.v; i < pl.v + pl.n; i++) pos.push(P[i * 3], P[i * 3 + 1], P[i * 3 + 2]);
       for (let k = pl.t; k < pl.t + pl.nt; k++) idx.push(I[k] - pl.v + base);
@@ -856,9 +991,16 @@ export class LevelView {
     const sel = this.sel;
     this.select(null);
     if (this.geoGroup) { this.vp.root.remove(this.geoGroup); this.geoGroup.traverse(x => { x.geometry?.disposeBoundsTree?.(); x.geometry?.dispose(); }); }
+    this.keepTexCache = !!this.parts; // combined: the part keeps its (shared) texture cache
     this.buildGeometry();
+    this.keepTexCache = false;
+    if (this.parts) {
+      const E = this.parts[this.editPart];
+      for (const m of this.levelMeshes) m.userData.part = this.editPart;
+      E.group = this.geoGroup; E.meshes = this.levelMeshes; E.triCount = this.triCount;
+    }
     this.applyToggles();
-    this.coll.dispose(); if ($('l-coll').checked) this.coll.setVisible(true);
+    this.coll.dispose(); this.setCollision($('l-coll').checked);
     if (sel) this.select(sel);
   }
 
@@ -904,9 +1046,28 @@ export class LevelView {
       const apply = () => { L.move(s.i, [num('lp-x'), num('lp-y'), num('lp-z')], num('lp-yaw') * Math.PI / 180); this.markDirty('props'); this.attachGizmo(); };
       for (const id of ['lp-x', 'lp-y', 'lp-z', 'lp-yaw']) $(id).onchange = apply;
       $('lp-type').onchange = e => { L.setType(s.i, +e.target.value); this.markDirty('props'); this.select({ kind: 'prop', i: s.i }); };
+      // a view setting (the file's ids don't change), remembered per level
+      $('lp-base').onchange = e => { const b = Math.round(+e.target.value) || 0; try { localStorage.setItem('tfstudio.propbase.' + L.level.toUpperCase(), b); } catch { /* not kept */ } L.setBase(b); this.select({ kind: 'prop', i: s.i }); this.renderList(); };
       $('lp-dup').onclick = () => { const p = L.doc.props[s.i]; const i = L.add(p.type, [p.pos[0] + 2, p.pos[1], p.pos[2]], p.yaw); this.markDirty('props'); this.renderList(); this.select({ kind: 'prop', i }); };
       $('lp-del').onclick = () => { L.remove(s.i); this.markDirty('props'); this.select(null); this.renderList(); };
       $('lp-focus').onclick = () => this.focus();
+      return;
+    }
+    if (s.kind === 'part') {
+      const p = this.parts[s.part], S = p.gsc, o = S.objects[s.i], sz = this.partBox.getSize(new THREE.Vector3()), c = this.partBox.getCenter(new THREE.Vector3());
+      E.innerHTML = `<table class="kv">
+        <tr><td>Scene</td><td class="mono">${esc(p.name)} ${p.hires ? '<span class="tag hires">HI-RES</span>' : ''}${p.building ? ' <span class="tag">BUILDINGSCENE</span>' : ''}</td></tr>
+        <tr><td>Scene object</td><td>#${s.i}</td></tr>
+        <tr><td>Name</td><td class="mono">${(o.instances || []).map(i => esc(S.instances[i].name)).join(', ') || '<span class="hint">none (no scene instance)</span>'}</td></tr>
+        <tr><td>Draws</td><td>${o.draws.length}</td></tr>
+        <tr><td>Centre</td><td class="mono">${fmt(c.x, 2)}, ${fmt(c.y, 2)}, ${fmt(c.z, 2)}</td></tr>
+        <tr><td>Size</td><td class="mono">${fmt(sz.x, 2)} × ${fmt(sz.y, 2)} × ${fmt(sz.z, 2)}</td></tr>
+      </table>
+      <div class="row" style="margin-top:6px"><button class="b primary" id="ls-pedit">Edit ${esc(p.name)}</button><button class="b" id="ls-focus">Focus</button></div>
+      <p class="hint">All of the level's NEXTGEN scenes are drawn together, as the game does in High Detail. One is edited at a time
+        (now ${esc(this.parts[this.editPart].name)}); this object belongs to ${esc(p.name)}. Switching keeps the view and selects this object.</p>`;
+      $('ls-pedit').onclick = () => this.setEditPart(s.part, s.i).catch(e => { console.error(e); status(e.message, true); });
+      $('ls-focus').onclick = () => this.focus();
       return;
     }
     if (s.kind === 'object') {
@@ -1066,13 +1227,34 @@ export class LevelView {
       <tr><td>Placements</td><td>${cnt('placements')}</td></tr>
       <tr><td>Triggers</td><td>${cnt('triggers')}</td></tr>
       <tr><td>Splines</td><td>${cnt('splines')}</td></tr>
-    </table>`;
+    </table>${this.partsTable()}`;
+    for (const el of document.querySelectorAll('#l-info [data-partvis]')) el.onchange = () => {
+      this.parts[+el.dataset.partvis].visible = el.checked; this.applyToggles(); this.setCollision($('l-coll').checked);
+      if (this.sel?.kind === 'part' && !el.checked && this.sel.part === +el.dataset.partvis) this.select(null);
+    };
+    for (const el of document.querySelectorAll('#l-info [data-partedit]')) el.onclick = () => this.setEditPart(+el.dataset.partedit).catch(e => { console.error(e); status(e.message, true); });
+  }
+
+  // combined High Detail level: each scene with a show/hide box and which one is being edited
+  partsTable() {
+    if (!this.parts) return '';
+    const NG = this.nextgen, tris = this.parts.reduce((n, p) => n + (p.triCount || 0), 0);
+    return `<h3 style="margin:10px 0 4px">Scenes loaded together (${NG?.fallback ? 'DEFAULTSCENE fallback' : 'LEVEL.CFG NEXTGEN'})</h3>
+      <table class="kv">${this.parts.map((p, k) => `<tr>
+        <td><label title="${esc(p.path)}"><input type="checkbox" data-partvis="${k}" ${p.visible ? 'checked' : ''}> <span class="mono">${esc(p.name)}</span></label>
+          ${p.hires ? '' : ' <span class="tag" title="Not in the hi-res set: the game folder\'s copy">game folder</span>'}</td>
+        <td>${Math.round(p.triCount || 0).toLocaleString()} tris · ${k === this.editPart ? '<span class="tag anim">editing</span>' : `<button class="b" data-partedit="${k}">Edit</button>`}</td></tr>`).join('')}
+        <tr><td>Total</td><td>${Math.round(tris).toLocaleString()} triangles</td></tr>
+      </table>
+      ${NG?.missing.length ? `<p class="warn">Not found: ${NG.missing.map(esc).join(', ')} (in neither the hi-res set nor the level folder).</p>` : ''}
+      <p class="hint">Click a surface of any scene to see what it is. Edits, collision follow and Blender import apply to the scene marked "editing".</p>`;
   }
 
   focus() {
     const s = this.sel; if (!s) return this.frameAll(true);
     let box = new THREE.Box3();
     if (s.kind === 'object') box.copy(this.objBox);
+    else if (s.kind === 'part') box.copy(this.partBox);
     else if (s.kind === 'copy') box.copy(this.copyBox(this.copies[s.i]));
     else if (s.kind === 'placement') box.setFromCenterAndSize(this.placeObjs[s.i].position, new THREE.Vector3(12, 12, 12));
     else if (s.kind === 'prop') box.copy(this.propLayer.boxOf(s.i)).expandByScalar(6);
@@ -1187,3 +1369,140 @@ export class LevelView {
 }
 
 function sameArr(a, b) { if (a.length !== b.length) return false; for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false; return true; }
+
+// A scene's texture i as a three.js texture, cached per scene
+function sceneTexture(S, cache, i) {
+  if (cache.has(i)) return cache.get(i);
+  const t = S.textures[i];
+  const tex = t && t.size && !t.cube ? ddsTexture(S.dds(t)) : null;
+  // PS3 cut-outs (pylons, fences, foliage) are DXT1 with 1-bit alpha: keep it, so the holes aren't drawn black
+  if (tex && S.ps3 && tex.format === THREE.RGB_S3TC_DXT1_Format) { tex.format = THREE.RGBA_S3TC_DXT1_Format; tex.userData.hasAlpha = true; }
+  cache.set(i, tex);
+  return tex;
+}
+
+// After building: picking trees, the sky dome, the play area (host.playBox) and cloud sheets, judged over every
+// mesh on screen (all of a level's scenes when they are loaded together). Safe to run again on the same meshes.
+export function finishGeometry(host, meshes) {
+  host.vp.root.updateMatrixWorld(true);
+  const all = new THREE.Box3();
+  for (const m of meshes) {
+    if (!m.geometry.boundsTree) m.geometry.computeBoundsTree();
+    if (m.userData.cloud && m.userData.mode !== 'b') { Object.assign(m.material, { transparent: false, alphaTest: 0.5, depthWrite: true }); m.material.needsUpdate = true; m.userData.cloud = false; }
+    m.layers.set(0); m.userData.sky = false; m.userData.skyBox = null; m.visible = true;
+    m.userData.box = new THREE.Box3().setFromObject(m);
+    all.union(m.userData.box);
+  }
+  const A = all.getSize(new THREE.Vector3());
+  const xs = [], ys = [], zs = [], w = new THREE.Vector3();
+  for (const m of meshes) {
+    // the sky dome wraps everything: flag it so "ground below" lookups and the minimap framing skip it
+    const b = m.userData.box, s = b.getSize(new THREE.Vector3());
+    m.userData.sky = s.y > A.y * 0.45 && s.x > A.x * 0.5 && s.z > A.z * 0.5;
+    if (m.userData.sky) {
+      // layer 2: the main camera sees it (only while inside it), the minimap and raycasts don't
+      m.layers.set(2); m.userData.skyBox = b;
+      continue;
+    }
+    // sample vertices: the busy area, not the far-reaching water/ground planes, sets the framing
+    const P = m.geometry.attributes.position, step = Math.max(1, Math.floor(P.count / 2000));
+    for (let i = 0; i < P.count; i += step) { w.fromBufferAttribute(P, i).applyMatrix4(m.matrixWorld); xs.push(w.x); ys.push(w.y); zs.push(w.z); }
+  }
+  const q = (a, f) => { a.sort((x, y) => x - y); return a[Math.min(a.length - 1, Math.floor(a.length * f))]; };
+  host.playBox = xs.length
+    ? new THREE.Box3(new THREE.Vector3(q(xs, 0.01), q(ys, 0.01), q(zs, 0.01)), new THREE.Vector3(q(xs, 0.99), q(ys, 0.99), q(zs, 0.99)))
+    : all;
+  // Cloud layers (an alpha texture on a mesh that sits wholly above the level, e.g. Tranquility's 4,000-unit
+  // sheet at 212-1,050 up) are blended in the game; drawn as cut-outs they look like floating camouflage
+  for (const m of meshes) {
+    if (m.userData.sky || m.userData.mode === 'b' || !m.material.userData.tex?.userData.hasAlpha) continue;
+    if (m.userData.box.min.y > host.playBox.max.y + 50) {
+      Object.assign(m.material, { transparent: true, alphaTest: 0, depthWrite: false });
+      m.material.needsUpdate = true;
+      m.userData.cloud = true;
+    }
+  }
+}
+
+// How each draw is drawn (by draw id): 'o' opaque, 'b' alpha-blended, 'm' multi-layer terrain, 'h' not drawn.
+// Vertex colour alpha is opacity (0x7F = 1). High Detail ground is stored twice in the same object (2026-11-12,
+// hi-res Tranquility: the two cover 92-99% of the same cells):
+//  - multi-pass: a copy of the vertices per texture layer, drawn on top of each other; the first layer's alpha is 1,
+//    each later layer's alpha is its blend weight (found as draws of one object with the same vertex count and first
+//    vertex; drawn solid, the coincident layers z-fight into rings and stripes);
+//  - single-pass: one draw whose material has extra layers (+0xBC…) and per-vertex weights (format bit 0x400).
+// The game draws one of the two. The single-pass one is drawn here ('m'); the multi-pass draws it replaces (same
+// object, a texture of its layer set, mostly the same ground) are 'h'. Other draws with alpha below 1 (decals, road
+// dirt overlays) are blended.
+export function drawModes(S) {
+  const modes = {};
+  for (const d of S.draws) modes[d.id] = 'o';
+  if (typeof S.vertexOffset !== 'function' || typeof S.layout !== 'function' || !S.u8 || !S.dv) return modes;
+  const sets = new Map(), info = new Map(), multi = new Map(); // multi: object -> its 'm' draws
+  for (const d of S.draws) {
+    if (!d.count) continue;
+    const L = S.layout(d), m = S.materials[d.material];
+    if (m?.layers && L.w2 >= 0 && m.layers.some(l => l >= 0)) {
+      modes[d.id] = 'm';
+      if (!multi.has(d.object)) multi.set(d.object, []);
+      multi.get(d.object).push(d);
+      continue;
+    }
+    if (L.col < 0) continue;
+    let minA = 255;
+    for (let i = 0; i < d.count && minA > 0; i++) minA = Math.min(minA, S.u8[S.vertexOffset(d, i) + L.col + 3]);
+    info.set(d.id, { d, solid: minA >= 0x7F });
+    const o = S.vertexOffset(d, 0);
+    const k = `${d.object}|${d.count}|${S.dv.getFloat32(o, true)},${S.dv.getFloat32(o + 4, true)},${S.dv.getFloat32(o + 8, true)}`;
+    if (!sets.has(k)) sets.set(k, []);
+    sets.get(k).push(info.get(d.id));
+  }
+  // in a layer set with no fully opaque copy, the first stays solid
+  for (const set of sets.values()) if (set.length > 1 && !set.some(s => s.solid)) set.reduce((a, b) => (a.d.id < b.d.id ? a : b)).solid = true;
+  for (const s of info.values()) if (!s.solid) modes[s.d.id] = 'b';
+  // multi-pass copies of ground that also has a single-pass draw
+  const CELL = 8, cells = d => {
+    const g = S.drawGeometry(d), P = g.P, T = g.tris, out = new Set();
+    for (let t = 0; t < T.length; t += 3) {
+      const a = T[t] * 3, b = T[t + 1] * 3, c = T[t + 2] * 3;
+      out.add(`${Math.floor((P[a] + P[b] + P[c]) / 3 / CELL)},${Math.floor((P[a + 2] + P[b + 2] + P[c + 2]) / 3 / CELL)}`);
+    }
+    return out;
+  };
+  for (const [obj, ms] of multi) {
+    const texs = new Set(), cov = new Set();
+    for (const d of ms) {
+      const m = S.materials[d.material];
+      texs.add(m.tex); for (const l of m.layers) if (l >= 0) texs.add(l);
+      for (const c of cells(d)) cov.add(c);
+    }
+    for (const d of S.draws) {
+      if (d.object !== obj || modes[d.id] === 'm' || !d.count || !texs.has(S.materials[d.material]?.tex)) continue;
+      const mine = cells(d);
+      let hit = 0; for (const c of mine) if (cov.has(c)) hit++;
+      if (mine.size && hit / mine.size > 0.5) modes[d.id] = 'h';
+    }
+  }
+  return modes;
+}
+
+// Multi-layer terrain: layer 0 (the material's map) with layers 1-3 mixed over it by the vertex weights (R, G, B)
+function layerShader(mat, maps) {
+  const use = new THREE.Vector3(...[0, 1, 2].map(k => (maps[k] ? 1 : 0)));
+  mat.userData.layerMaps = maps;
+  mat.onBeforeCompile = sh => {
+    for (let k = 0; k < 3; k++) sh.uniforms['map' + (k + 1)] = { value: maps[k] || mat.map };
+    sh.uniforms.useL = { value: use };
+    sh.vertexShader = 'attribute vec3 blendw;\nvarying vec3 vBlendW;\n'
+      + sh.vertexShader.replace('#include <uv_vertex>', '#include <uv_vertex>\n  vBlendW = blendw;');
+    sh.fragmentShader = 'uniform sampler2D map1;\nuniform sampler2D map2;\nuniform sampler2D map3;\nuniform vec3 useL;\nvarying vec3 vBlendW;\n'
+      + sh.fragmentShader.replace('#include <map_fragment>', `#ifdef USE_MAP
+  vec4 sampledDiffuseColor = texture2D( map, vMapUv );
+  sampledDiffuseColor.rgb = mix( sampledDiffuseColor.rgb, texture2D( map1, vMapUv ).rgb, clamp( vBlendW.x * useL.x, 0.0, 1.0 ) );
+  sampledDiffuseColor.rgb = mix( sampledDiffuseColor.rgb, texture2D( map2, vMapUv ).rgb, clamp( vBlendW.y * useL.y, 0.0, 1.0 ) );
+  sampledDiffuseColor.rgb = mix( sampledDiffuseColor.rgb, texture2D( map3, vMapUv ).rgb, clamp( vBlendW.z * useL.z, 0.0, 1.0 ) );
+  diffuseColor *= sampledDiffuseColor;
+#endif`);
+  };
+  mat.customProgramCacheKey = () => 'tf-layers';
+}

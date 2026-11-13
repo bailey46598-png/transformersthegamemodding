@@ -6,7 +6,8 @@ import { DDSLoader } from 'three/addons/loaders/DDSLoader.js';
 // ---------------------------------------------------------------- server API
 export const api = {
   async list(dir) { return json(await fetch(`/api/list?dir=${encodeURIComponent(dir)}`)); },
-  async find(exts) { return json(await fetch(`/api/find?ext=${encodeURIComponent(exts)}`)); },
+  async find(exts, hires = false) { return json(await fetch(`/api/find?ext=${encodeURIComponent(exts)}${hires ? '&hires=1' : ''}`)); },
+  async info() { return json(await fetch('/api/info')); },
   async bytes(path) {
     const r = await fetch(`/api/file?path=${encodeURIComponent(path)}`);
     if (!r.ok) throw new Error(`${path}: ${r.status === 404 ? 'not found' : r.statusText}`);
@@ -25,7 +26,8 @@ async function json(r) { const j = await r.json(); if (!r.ok || j.error) throw n
 export const $ = id => document.getElementById(id);
 export function status(msg, bad = false) { const s = $('status'); s.textContent = msg; s.style.color = bad ? 'var(--bad)' : ''; }
 export const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-export const fmt = (v, d = 3) => (Math.abs(v) < 1e-9 ? 0 : v).toFixed(d).replace(/\.?0+$/, '') || '0';
+// trailing zeros after the decimal point go (60 stays 60: d = 0 used to give "6")
+export const fmt = (v, d = 3) => { const s = (Math.abs(v) < 1e-9 ? 0 : v).toFixed(d); return s.includes('.') ? s.replace(/\.?0+$/, '') : s; };
 export const joinPath = (...p) => p.filter(Boolean).join('/').replace(/\\/g, '/').replace(/\/+/g, '/');
 export function download(blob, name) {
   const a = document.createElement('a');
@@ -40,11 +42,23 @@ export const dirOf = p => p.replace(/\\/g, '/').replace(/\/[^/]*$/, '');
 const dds = new DDSLoader();
 export function ddsTexture(buffer) {
   try {
-    const d = dds.parse(buffer, true);
+    // The game's DDS headers give a mip count (+28) but never set DDSD_MIPMAPCOUNT (0x20000) in the flags (+8):
+    // every mipmapped texture in the PC GSCs, Normal and High Detail alike. DDSLoader trusts the flag, so it read
+    // only the top level and mipmapping was off: tiled ground and roads aliased into rings and stripes at a
+    // distance. Set the flag on a copy (never on the file's own bytes).
+    const head = new DataView(buffer instanceof ArrayBuffer ? buffer : buffer.buffer, buffer.byteOffset || 0, 32);
+    let d = null;
+    if (head.getUint32(28, true) > 1 && !(head.getUint32(8, true) & 0x20000)) {
+      const copy = new Uint8Array(buffer instanceof ArrayBuffer ? buffer.slice(0) : buffer.slice()).buffer;
+      new DataView(copy).setUint32(8, head.getUint32(8, true) | 0x20000, true);
+      try { d = dds.parse(copy, true); } catch { d = null; } // mip data shorter than the header says: top level only
+    }
+    d ??= dds.parse(buffer, true);
     if (d.isCubemap || !d.mipmaps?.length) return null;
     const t = new THREE.CompressedTexture(d.mipmaps, d.width, d.height, d.format);
     t.minFilter = d.mipmaps.length > 1 ? THREE.LinearMipmapLinearFilter : THREE.LinearFilter;
     t.magFilter = THREE.LinearFilter;
+    t.anisotropy = 8; // ground seen at a shallow angle stays sharp (clamped to what the GPU supports)
     t.wrapS = t.wrapT = THREE.RepeatWrapping;
     t.colorSpace = THREE.SRGBColorSpace;
     t.needsUpdate = true;

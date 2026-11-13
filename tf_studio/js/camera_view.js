@@ -9,7 +9,7 @@
 // Background: CHARACTER_CAMERAS.md (Fresh Build).
 import * as THREE from 'three';
 import { api, $, status, esc, fmt, Viewport } from './common.js';
-import { loadModel, buildMeshes, disposeGroup } from './rig.js';
+import { loadModel, buildMeshes, disposeGroup, restPose, skinMeshes } from './rig.js';
 
 const UNITS = 65536 / 360;   // game angle units per degree
 const DEFAULT_FOOT = 0x721B10;
@@ -26,7 +26,7 @@ const CHARS = [
   { id: 3, sec: 'Bumblebee', name: 'Bumblebee', prof: 1, model: 'BUMBLEBEE/CAR_PC.GHG', ...D, r: [1, 5], note: 'Qatar uses 0x71AF50' },
   { id: 4, sec: 'Bumblebee07', name: 'Bumblebee 07', prof: 2, model: 'BUMBLEBEE07/CAR_PC.GHG', ...D, r: [1, 5] },
   { id: 5, sec: 'Jazz', name: 'Jazz', prof: 3, model: 'JAZZ/CAR_PC.GHG', a: DEFAULT_FOOT, b: 0x71B4F0, r: [0.5, 4] },
-  { id: 6, sec: 'Ratchet', name: 'Ratchet', prof: 4, model: 'RATCHET/CAR_PC.GHG', ...D },
+  { id: 6, sec: 'Ratchet', name: 'Ratchet', prof: 5, model: 'RATCHET/CAR_PC.GHG', ...D },
   { id: 7, sec: 'Ironhide', name: 'Ironhide', prof: 5, model: 'IRONHIDE/CAR_PC.GHG', a: 0x71AC80, b: 0x7219B0, r: [1, 6.5] },
   { id: 8, sec: 'Megatron', name: 'Megatron', prof: 6, model: 'MEGATRON/CAR_PC.GHG', a: 0x71AC80, b: 0x71B210, air: true },
   { id: 9, sec: 'Starscream', name: 'Starscream', prof: 7, model: 'STARSCREAM/CAR_PC.GHG', a: 0x71B370, b: 0x71B650, air: true },
@@ -279,9 +279,11 @@ export class CameraView {
       const path = this.modelPath(c);
       if (!path) throw new Error(`${c.name} has no vehicle model in this game folder (camera numbers still shown)`);
       const model = await loadModel(path);
+      const rest = await restPose(model);
       if (this.ch !== c) return;
       if (this.vehicle) { this.vp.root.remove(this.vehicle.group); disposeGroup(this.vehicle.group); }
       this.vehicle = buildMeshes(model);
+      if (rest) skinMeshes(model, this.vehicle.meshes, rest);   // the pickup truck's bind pose lies on its side
       // The vehicle models face -z (Optimus's cab, Brawl's barrel). Turn them round so this tab's vehicle frame is
       // x right, y up, +z = the visual front, and "behind" is behind the visual rear.
       this.vehicle.group.rotation.y = Math.PI;

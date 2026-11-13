@@ -1385,3 +1385,43 @@ other speakers, B plays a random own line. Details in its README.
   Installed in `Lab - VehicleJump`. **Not run in game yet.**
 - **0.12 (rebuilt):** FlailSpeedScale default 2.0 → 1.0 (game speed, matches the flail-walk animation), at the user's request. Installed in the lab (SHA-256 `48662DFDBE03C5AB…`).
 - **Released** as VoiceMenu v1.0.0 (tag `VoiceMenu-v1.0.0`): source in `trainer/VoiceMenu`. The zip has no game audio; the mod reads the game's own `AUDIO\_Dialogue\USA`, or the installer copies the WAVs into `VoiceMenu\Lines` from another folder.
+
+## TF Studio: High Detail levels drawn as the game does, hi-res rendering fixes, hi-res cutscenes (2026-11-12)
+
+- **User:** hi-res maps were shown one split scene at a time, but the game loads them together. Then: fix the hi-res
+  textures (striped roads, green Qatar, ringed ground), support the hi-res assets in the cutscene player, and find
+  why hi-res City's skyscrapers looked scrambled.
+- **Levels tab, "All N NEXTGEN scenes together"** (new `js/level_scenes.js`): reads LEVEL.CFG, loads every `SCENE` of
+  its `PLATFORM NEXTGEN` block (`<PATH>/<name>_PC.GSC`, hi-res set first, then the game folder; `DEFAULTSCENE` if none
+  exist) and draws them in one world. One scene is edited at a time (Main first). The info panel lists the scenes with
+  show/hide boxes and Edit buttons, and clicking another scene's surface offers "Edit <scene>". Collision overlays and
+  prop models (often in `_POs`) come from all of them. Tested: Tranquility2 (4 scenes, 4.7 M triangles), Qatar (5).
+- **Rendering fixes** (found on hi-res Tranquility, Qatar and City):
+  - **Mipmaps:** the game's DDS headers never set `DDSD_MIPMAPCOUNT`, so three.js loaded only the top level (tiled
+    ground aliased into rings). `ddsTexture` sets the flag on a copy. This affected Normal detail too.
+  - **Vertex formats:** bits `0x200` and `0x400` share one dword (`0x1F29` is 52 bytes, not 56); `0x80` = 4 bytes,
+    `0x2000` = 32, `0x4000000` = 8. Checked against every format in hi-res Tranquility, Qatar and City. Those formats
+    used to fall back to a stride guess with the wrong colour and UV offsets (striped roads, green Qatar).
+  - **Layered ground:** hi-res ground is stored twice per object: multi-pass (a vertex copy per texture layer, vertex
+    alpha = layer weight) and single-pass (a material with extra layers at `+0xBC`… and per-vertex weights in the
+    `0x400` dword, R/G/B = layers 1-3). Drawn solid, the copies z-fought into rings. TF Studio now draws the
+    single-pass version with a small layer shader and skips the copies it replaces (saving still moves them).
+  - **Alpha:** a material's alpha mode is the low 2 bits of `+0x40`: 0 = opaque (a DXT5 alpha is then a reflection
+    mask, e.g. City's window facades), 1-3 = blended (road dirt layers, foliage, layer passes, decals).
+  - **Two index buffers:** five hi-res scenes (CITY_BUILDINGS, CITY, HOOVERINT_MAIN, HOOVERINT_TUNNELS, QATAR_GROUND)
+    have two IBs; the draw record's `+0x1C` picks one. It was ignored, so up to 65% of a scene's draws (Qatar Ground)
+    got triangles from the wrong buffer (City's skyscrapers smeared diagonally). Readers use it now; the Blender mesh
+    importer and region cut write new strips into buffer 0 and set `+0x1C` to 0. `PC_GSC_FORMAT.md` updated.
+- **Cutscenes tab, Normal / High detail switch:** High detail loads the cutscene config's split scenes from the hi-res
+  set (in the level's LEVEL.CFG PATH folder; NEXTGEN list as a fallback) and draws them together with the Levels
+  tab's builder, and loads hi-res character models and DEPENDS parents (normal model if a hi-res skeleton doesn't fit
+  the track). Set pieces are found in any scene; Export .glb covers all of them. Tested: A1_CH1_INTRO (3 scenes,
+  4 hi-res characters, same 44/51 set pieces as Normal), A5_CH1_OUTRO City (13 characters), A3_CH1_OUTRO HooverInt
+  (reports `HooverInt_pos` missing from the hi-res set), D2M1_INTRO (level folder).
+- **Not done / open:** the exact blend of Tranquility's road tyre-track layer (tex 204, white streaks on black at full
+  weight) is a guess, as the terrain shader is compiled into the exe. Mesh import and region cut have not been tried on
+  a two-index-buffer scene. Nothing was saved to game files. All checks were in the browser, not in game.
+- **Earlier TF Studio work not logged until now (2026-11-10/11):** Textures tab (3D/2D painting, colour swap, saves
+  only changed DXT blocks), hi-res asset support (`HIRES/` virtual folder, Normal/High detail switch in Models and
+  Textures), the Levels tab's script cutscene panel (`#SplineCamera` shots and actors) and Game recordings panel
+  (DebugTrainer 0.4 cutscene recordings compared with the preview).

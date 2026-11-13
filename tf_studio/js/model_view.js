@@ -3,7 +3,8 @@ import * as THREE from 'three';
 import { CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
 import { AN3 } from './an3.js';
 import { api, $, status, esc, fmt, joinPath, dirOf, Viewport, download } from './common.js';
-import { loadCharacter, loadModel, textureFor, buildMeshes, poseBones, skinMeshes } from './rig.js';
+import { loadCharacter, loadModel, textureFor, buildMeshes, poseBones, skinMeshes, REST_CLIPS } from './rig.js';
+import { loadHires, hiresAvailable, forDetail, normalPath, isHires, detailTag } from './hires.js';
 
 const CH = ['tx', 'ty', 'tz', 'rx', 'ry', 'rz', 'sx', 'sy', 'sz'];
 // RATE 0.000001 in the configs means "hold this pose" (e.g. strafe_idle). Preview those at 30 fps.
@@ -50,15 +51,17 @@ export class ModelView {
       const k = c.name.toLowerCase(), own = c.cfg.split('/').pop().toLowerCase().replace(/\.cfg$/, '') === k;
       if (!this.charByName.has(k) || own) this.charByName.set(k, c);
     }
+    await loadHires();
+    if (!hiresAvailable()) { const o = $('m-detail').options[1]; o.disabled = true; o.textContent += ' — not found'; }
     this.renderList();
-    status(`${this.characters.length} characters found.`);
+    status(`${this.characters.length} characters found.` + (hiresAvailable() ? ' Hi-res set found.' : ''));
   }
 
   async renderList() {
     const src = $('m-source').value, q = $('m-filter').value.toLowerCase(), L = $('m-list');
     if (src === 'files' && !this.files) {
       L.innerHTML = '<div class="hint" style="padding:10px">Scanning for models…</div>';
-      this.files = (await api.find('.ghg')).sort();
+      this.files = (await api.find('.ghg', true)).sort((a, b) => isHires(a) - isHires(b) || a.localeCompare(b));
     }
     let html = '';
     if (src === 'chars') {
@@ -73,8 +76,10 @@ export class ModelView {
       });
     } else {
       let lastDir = null;
+      const high = $('m-detail').value === 'high';
       for (const f of this.files || []) {
         if (q && !f.toLowerCase().includes(q)) continue;
+        if (isHires(f) && !high) continue;
         const d = dirOf(f);
         if (d !== lastDir) { html += `<div class="grp">${esc(d)}</div>`; lastDir = d; }
         html += `<div class="item" data-file="${esc(f)}">${esc(f.split('/').pop())}</div>`;
@@ -85,6 +90,7 @@ export class ModelView {
 
   bindUI() {
     $('m-source').onchange = () => this.renderList();
+    $('m-detail').onchange = () => { this.renderList(); this.reopen?.(); };
     $('m-filter').oninput = () => this.renderList();
     $('m-list').onclick = e => {
       const it = e.target.closest('.item'); if (!it) return;
@@ -120,14 +126,17 @@ export class ModelView {
     try {
       status(`Loading ${c.name}…`);
       const { ch, modelPath, parents, anims } = await loadCharacter(c, this.charByName);
-      await this.load(modelPath, { title: ch.name, anims, parents, cfg: c.cfg });
+      const d = $('m-detail').value;
+      this.reopen = () => this.openCharacter(c);
+      await this.load(forDetail(modelPath, d), { title: ch.name, anims, parents: parents.map(p => forDetail(p, d)), cfg: c.cfg });
     } catch (e) { console.error(e); status(`${c.name}: ${e.message}`, true); }
   }
 
   async openFile(path) {
     try {
       status(`Loading ${path}…`);
-      const dir = dirOf(path);
+      this.reopen = null;
+      const dir = dirOf(normalPath(path)); // hi-res models use the game folder's clips
       const listing = await api.list(dir);
       const anims = listing.files.filter(f => /\.an3$/i.test(f.name))
         .map(f => ({ name: f.name.replace(/\.an3$/i, '').toLowerCase(), file: f.name, path: joinPath(dir, f.name), rate: 30, layers: null, flags: [] }));
@@ -165,8 +174,11 @@ export class ModelView {
     this.renderAnims();
     const ok = anims.filter(a => a.clip && a.clip.bones === model.bones.length).length;
     status(`${meta.title}: ${model.bones.length} bones · ${anims.length} clips (${ok} match the skeleton).`);
-    const idle = anims.findIndex(a => a.clip && a.clip.bones === model.bones.length && /^idle$/i.test(a.name));
-    if (idle >= 0) this.selectClip(idle);
+    // open in the rest clip (cars: driveidle/caridle), since some bind poses are rotated (pickup truck car)
+    for (const name of REST_CLIPS) {
+      const i = anims.findIndex(a => a.clip && a.clip.bones === model.bones.length && a.name.toLowerCase() === name);
+      if (i >= 0) { this.selectClip(i); break; }
+    }
   }
 
   clear() {
@@ -328,7 +340,7 @@ export class ModelView {
     const missingTex = m.materials.filter((_, i) => this.textureFor(m, i) == null && m.materials[i]).length;
     $('m-info').innerHTML = `<table class="kv">
       <tr><td>Name</td><td>${esc(m.title)}</td></tr>
-      <tr><td>File</td><td class="mono">${esc(m.path)}</td></tr>
+      <tr><td>File</td><td class="mono">${esc(m.path)} ${detailTag(m.path)}</td></tr>
       ${m.cfg ? `<tr><td>Config</td><td class="mono">${esc(m.cfg)}</td></tr>` : ''}
       <tr><td>Bones</td><td>${m.bones.length}</td></tr>
       <tr><td>Parts</td><td>${m.parts.length} (${skinned} skinned)</td></tr>

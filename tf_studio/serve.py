@@ -1,11 +1,15 @@
 """TF Studio local server: serves the tool and gives it read/write access to the game folder.
 
-usage: python serve.py [GAME_DIR] [PORT]
+usage: python serve.py [GAME_DIR] [PORT] [HIRES_DIR]
 GAME_DIR defaults to two folders up from this file (the "Fresh Build" folder). Binds to 127.0.0.1 only.
+HIRES_DIR is the High Detail asset set ("Hi-res assets": CHARS/*/*.GHG, LEVELS/*/*.GSC). It defaults to the first
+of HIRES_CANDIDATES that exists, and is served as the virtual folder HIRES/ (read and write, like the game folder).
 
 API (all paths are relative to GAME_DIR, matched case-insensitively like Windows does):
   GET  /api/list?dir=REL          -> {"dirs": [...], "files": [{"name", "size"}]}
   GET  /api/find?ext=.GHG,.GSC    -> ["REL/PATH", ...] every file with one of these extensions
+                                     (&hires=1 adds the hi-res set's files as HIRES/...)
+  GET  /api/info                  -> {"game", "hires"} (hires = the hi-res folder, or null)
   GET  /api/file?path=REL         -> raw bytes
   POST /api/save?path=REL         -> writes the body; the first save of a file keeps the original as REL.studio.bak
 """
@@ -19,6 +23,13 @@ SKIP_DIRS = {'__pycache__', '.git', 'tf_studio', 'PS3 assets'}
 # PS3 level folders copied into GAME\PS3 assets\LEVELS (view-only in the tool) appear as LEVELS/PS3_<name>
 PS3_LEVELS = os.path.join(GAME, 'PS3 assets', 'LEVELS')
 PS3_PREFIX = 'PS3_'
+HIRES_CANDIDATES = [
+    os.path.join(GAME, '..', 'Transformers.The.Game', 'Transformers.The.Game', 'Transformers - The Game', 'Hi-res assets'),
+    os.path.join(GAME, 'Hi-res assets'),
+]
+HIRES = next((os.path.abspath(p) for p in ([sys.argv[3]] if len(sys.argv) > 3 else []) + HIRES_CANDIDATES
+              if os.path.isdir(p)), None)
+HIRES_PREFIX = 'HIRES'
 
 
 def ps3_levels():
@@ -28,8 +39,13 @@ def ps3_levels():
 def resolve(rel, must_exist=True):
     """Map a relative path onto GAME, case-insensitively. Refuses anything outside GAME.
     LEVELS/PS3_<name>/... maps to PS3 assets/LEVELS/<name>/..."""
-    cur = GAME
+    cur = root = GAME
     parts = [p for p in rel.replace('\\', '/').split('/') if p not in ('', '.')]
+    if parts and parts[0].upper() == HIRES_PREFIX:     # HIRES/... = the hi-res asset set
+        if not HIRES:
+            raise FileNotFoundError(rel)
+        cur = root = HIRES
+        parts = parts[1:]
     if len(parts) >= 2 and parts[0].lower() == 'levels' and parts[1].upper().startswith(PS3_PREFIX) \
             and parts[1][len(PS3_PREFIX):].lower() in (n.lower() for n in ps3_levels()):
         cur = PS3_LEVELS
@@ -46,7 +62,7 @@ def resolve(rel, must_exist=True):
                 raise FileNotFoundError(rel)
         cur = nxt
     full = os.path.abspath(cur)
-    if os.path.commonpath([full, GAME]) != GAME:
+    if os.path.commonpath([full, root]) != root:
         raise PermissionError(rel)
     return full
 
@@ -89,11 +105,15 @@ class Handler(SimpleHTTPRequestHandler):
             if u.path == '/api/find':
                 exts = tuple(x.lower() for x in q.get('ext', [''])[0].split(',') if x)
                 out = []
-                for root, ds, fs in os.walk(GAME):
-                    ds[:] = sorted(x for x in ds if x not in SKIP_DIRS)
-                    for f in sorted(fs):
-                        if f.lower().endswith(exts):
-                            out.append(os.path.relpath(os.path.join(root, f), GAME).replace('\\', '/'))
+                tops = [(GAME, '')]
+                if HIRES and q.get('hires', ['0'])[0] == '1':
+                    tops.append((HIRES, HIRES_PREFIX + '/'))
+                for top, pre in tops:
+                    for root, ds, fs in os.walk(top):
+                        ds[:] = sorted(x for x in ds if x not in SKIP_DIRS)
+                        for f in sorted(fs):
+                            if f.lower().endswith(exts):
+                                out.append(pre + os.path.relpath(os.path.join(root, f), top).replace('\\', '/'))
                 return self.send_json(out)
             if u.path == '/api/file':
                 p = resolve(q['path'][0])
@@ -105,7 +125,7 @@ class Handler(SimpleHTTPRequestHandler):
                 self.wfile.write(data)
                 return
             if u.path == '/api/info':
-                return self.send_json(dict(game=GAME))
+                return self.send_json(dict(game=GAME, hires=HIRES))
         except FileNotFoundError as e:
             return self.send_json(dict(error='not found: %s' % e), 404)
         except PermissionError as e:
@@ -118,9 +138,10 @@ class Handler(SimpleHTTPRequestHandler):
         if u.path != '/api/save':
             return self.send_json(dict(error='unknown'), 404)
         try:
-            p = resolve(q['path'][0], must_exist=False)
+            # read the body first, so an error reply doesn't reset the connection mid-upload
             n = int(self.headers.get('Content-Length', 0))
             data = self.rfile.read(n)
+            p = resolve(q['path'][0], must_exist=False)
             backup = None
             if os.path.exists(p) and not os.path.exists(p + '.studio.bak'):
                 backup = p + '.studio.bak'
@@ -129,8 +150,7 @@ class Handler(SimpleHTTPRequestHandler):
             with open(tmp, 'wb') as f:
                 f.write(data)
             os.replace(tmp, p)
-            return self.send_json(dict(ok=True, bytes=len(data),
-                                       backup=os.path.relpath(backup, GAME) if backup else None))
+            return self.send_json(dict(ok=True, bytes=len(data), backup=os.path.basename(backup) if backup else None))
         except Exception as e:
             return self.send_json(dict(error=str(e)), 500)
 
@@ -140,5 +160,6 @@ if __name__ == '__main__':
     mimetypes.add_type('text/javascript', '.js')
     print('TF Studio')
     print('  game folder:', GAME)
+    print('  hi-res set: ', HIRES or '(not found)')
     print('  open        http://127.0.0.1:%d/' % PORT)
     ThreadingHTTPServer(('127.0.0.1', PORT), Handler).serve_forever()

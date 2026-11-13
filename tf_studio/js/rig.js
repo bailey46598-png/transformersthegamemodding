@@ -2,8 +2,10 @@
 // and bone poses from .AN3-style channel values.
 import * as THREE from 'three';
 import { GHGModel, M4 } from './formats.js';
+import { AN3 } from './an3.js';
 import { readCreatureConfig, modelFileName } from './text_formats.js';
 import { api, joinPath, dirOf, ddsTexture } from './common.js';
+import { normalPath } from './hires.js';
 
 // Load a character from its config: its model plus the DEPENDS parents that lend it textures.
 // charByName: lower-case CHARACTER name -> {cfg, ...} (the model tab's index).
@@ -25,6 +27,29 @@ export async function loadModel(path, parents = []) {
   model.parentModels = [];
   for (const p of parents) { try { model.parentModels.push(new GHGModel(await api.bytes(p))); } catch (e) { console.warn('parent', p, e); } }
   return model;
+}
+
+// Clips a model rests in, in order. Car models have no IDLE, only DRIVEIDLE/CARIDLE.
+export const REST_CLIPS = ['idle', 'driveidle', 'caridle'];
+
+// Bone world matrices for frame 0 of the model's own rest clip (same folder, same bone count), or null.
+// The game always plays a clip, so this is closer to how it looks than the bind pose: some bind poses are
+// rotated (the pickup truck drone's car model lies on its side until DRIVEIDLE turns its body bone upright).
+export async function restPose(model) {
+  if (!model.path) return null;
+  const dir = dirOf(normalPath(model.path)); // a hi-res model's clips are in the game folder
+  let files;
+  try { files = (await api.list(dir)).files; } catch { return null; }
+  for (const name of REST_CLIPS) {
+    const f = files.find(x => x.name.toLowerCase() === `${name}.an3`);
+    if (!f) continue;
+    try {
+      const clip = new AN3(await api.bytes(joinPath(dir, f.name)), f.name);
+      if (clip.bones !== model.bones.length) continue;
+      return poseBones(model, clip.pose(0), clip.channels, clip.bones, { pin: true });
+    } catch { /* unreadable clip: try the next */ }
+  }
+  return null;
 }
 
 // Another .GHG in the same folder with exactly `bones` bones (e.g. a transforming model), or null.
@@ -116,7 +141,7 @@ export function buildMeshes(model) {
     mat.userData.tex = tex;
     if (tex?.userData.hasAlpha) mat.alphaTest = 0.4;
     const mesh = new THREE.Mesh(geo, mat);
-    mesh.userData = { src, srcN, J, W, layer: grp.layer };
+    mesh.userData = { src, srcN, J, W, layer: grp.layer, material: grp.material };
     mesh.frustumCulled = false;
     group.add(mesh);
     meshes.push(mesh);

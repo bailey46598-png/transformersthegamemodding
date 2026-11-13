@@ -9,6 +9,7 @@ import { M4 } from './formats.js';
 import { localBones, ddsFor } from './rig.js';
 import { decodeDDS } from './mesh_io.js';
 import { blockPose, objectVisible, poseMatrix } from './cu2.js';
+import { drawModes } from './level_view.js';
 
 // S·M·S for a row-form matrix: negate the entries where exactly one of row and column is the Z axis
 export function mirror(m) {
@@ -222,13 +223,15 @@ export async function exportCutsceneGLB(view, { radius = 150, fov = 50 } = {}) {
     });
     tracks.push(...clip.tracks);
   }
-  // set pieces the cutscene moves: their own meshes, animated
-  const S = view.sceneCache?.S;
-  if (S) {
+  // set pieces the cutscene moves: their own meshes, animated. The level can be several scenes (High Detail).
+  const scenes = view.sceneCache?.list?.length ? view.sceneCache.list
+    : view.sceneCache?.S ? [{ S: view.sceneCache.S, path: view.scenePath }] : [];
+  if (scenes.length) {
     view.objs.forEach((r, i) => {
       if (!r.draws.length) return;
+      const S = r.S || scenes[0].S;
       const name = safeName(`piece_${r.o.name || i}_${i}`);
-      const mesh = levelMesh(S, r.draws.map(di => S.draws[di]), name, view);
+      const mesh = levelMesh(S, r.draws.map(di => S.draws[di]), name, r.scene || scenes[0].path);
       if (!mesh) return;
       // geometry is in world space (mirrored); the node carries the move relative to the stored matrix
       const T = new Float32Array(frames * 3), Q = new Float32Array(frames * 4), Sc = new Float32Array(frames * 3);
@@ -254,14 +257,19 @@ export async function exportCutsceneGLB(view, { radius = 150, fov = 50 } = {}) {
       if (box.isEmpty() && cut.cameraBlock) for (const c of cut.cameras) { const p = blockPose(cut.cameraBlock, 0, c.node, true); if (p) box.expandByPoint(new THREE.Vector3(p[0], p[1], p[2])); }
       if (!box.isEmpty()) {
         const ctr = box.getCenter(new THREE.Vector3()), R = box.getSize(new THREE.Vector3()).length() / 2 + radius;
-        const moving = new Set(view.objs.flatMap(r => r.draws));
-        // draw origins in mirrored space: (x, y, -z)
-        const near = S.draws.filter(d => !moving.has(d.id) && d.matrix
-          && Math.hypot(d.matrix[12] - ctr.x, d.matrix[13] - ctr.y, -d.matrix[14] - ctr.z) < R);
-        const byTex = new Map();
-        for (const d of near) { const t = S.materials[d.material]?.tex ?? -1; if (!byTex.has(t)) byTex.set(t, []); byTex.get(t).push(d); }
         const lvl = new THREE.Group(); lvl.name = 'level';
-        for (const [t, ds] of byTex) { const m = levelMesh(S, ds, `level_tex${t}`, view); if (m) lvl.add(m); }
+        scenes.forEach(({ S, path }, si) => {
+          const moving = new Set(view.objs.filter(r => (r.S || scenes[0].S) === S).flatMap(r => r.draws));
+          // blended layer passes and the multi-pass copies of layered ground would only z-fight in Blender
+          const modes = drawModes(S);
+          // draw origins in mirrored space: (x, y, -z)
+          const near = S.draws.filter(d => !moving.has(d.id) && d.matrix && (modes[d.id] === 'o' || modes[d.id] === 'm')
+            && Math.hypot(d.matrix[12] - ctr.x, d.matrix[13] - ctr.y, -d.matrix[14] - ctr.z) < R);
+          const byTex = new Map();
+          for (const d of near) { const t = S.materials[d.material]?.tex ?? -1; if (!byTex.has(t)) byTex.set(t, []); byTex.get(t).push(d); }
+          const tag = scenes.length > 1 ? `s${si}_` : '';
+          for (const [t, ds] of byTex) { const m = levelMesh(S, ds, `level_${tag}tex${t}`, path); if (m) lvl.add(m); }
+        });
         scene.add(lvl);
       }
     }
@@ -273,7 +281,7 @@ export async function exportCutsceneGLB(view, { radius = 150, fov = 50 } = {}) {
 
 // static level draws as one mesh (world space, mirrored), textured
 const levelMats = new Map();
-function levelMesh(S, draws, name, view) {
+function levelMesh(S, draws, name, scenePath) {
   let nv = 0, nt = 0;
   const geos = draws.map(d => S.drawGeometry(d));
   for (const g of geos) { nv += g.P.length / 3; nt += g.tris.length; }
@@ -297,7 +305,7 @@ function levelMesh(S, draws, name, view) {
   geo.setIndex(new THREE.BufferAttribute(I, 1));
   geo.computeVertexNormals();
   const tex = S.materials[draws[0].material]?.tex ?? -1;
-  const key = `${view.scenePath}:${tex}`;
+  const key = `${scenePath}:${tex}`;
   if (!levelMats.has(key)) {
     const tx = tex >= 0 && S.textures[tex]?.size && !S.textures[tex].cube ? canvasTexture(new Uint8Array(S.dds(S.textures[tex]))) : null;
     const m = new THREE.MeshStandardMaterial({ name: `tex${tex}`, map: tx, roughness: 1, metalness: 0 });

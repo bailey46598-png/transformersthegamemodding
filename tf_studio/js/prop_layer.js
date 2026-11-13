@@ -1,7 +1,7 @@
 // The level tab's physics props (NEWPHYSOBJ.DAT): every prop drawn with its type's model, selectable, movable,
 // turnable, retyped, duplicated, deleted or added, and written back on save. Format: js/props.js.
 import * as THREE from 'three';
-import { readProps, writeProps, readPropTypes } from './props.js';
+import { readProps, writeProps, readPropTypes, typeBase, KNOWN_TYPE_BASE } from './props.js';
 import { api, $, esc, fmt, joinPath } from './common.js';
 import { M4, transformPoints } from './formats.js';
 
@@ -26,6 +26,14 @@ export class PropLayer {
       this.path = joinPath(dir, has(dat));
       this.doc = readProps(await api.bytes(this.path));
       this.types = has(ini) ? readPropTypes(await api.text(joinPath(dir, has(ini)))) : [];
+      // the stored type is a game-wide id: index + this level's base (props.js)
+      this.level = dir.split('/').pop();
+      let base = typeBase(this.doc, this.level);
+      // a level has one base: guess from the lowest id in both files (normal and _NG)
+      const other = has(VARIANTS[variant === 'ng' ? 'normal' : 'ng'][0]);
+      if (other && !(this.level.toUpperCase() in KNOWN_TYPE_BASE)) try { base = Math.min(base, typeBase(readProps(await api.bytes(joinPath(dir, other))), this.level)); } catch { /* keep */ }
+      try { const o = localStorage.getItem('tfstudio.propbase.' + this.level.toUpperCase()); if (o !== null) base = +o; } catch { /* default */ }
+      this.setBase(base, false);
       this.build();
     } catch (e) { console.warn('props', e); this.doc = null; this.error = e.message; }
   }
@@ -42,10 +50,16 @@ export class PropLayer {
   template(t) {
     this._tpl ??= new Map();
     if (this._tpl.has(t)) return this._tpl.get(t);
-    const S = this.view.gsc, name = this.types?.[t]?.special?.toLowerCase();
+    const name = this.types?.[t]?.special?.toLowerCase();
     let out = null;
-    const ins = name && S?.instances.find(i => i.name.toLowerCase() === name);
-    if (ins && S.objects[ins.object]) {
+    // every scene on screen (High Detail keeps the prop models in the separate _POs scene), the edited one first
+    const scenes = this.view.sceneList?.() || (this.view.gsc ? [{ gsc: this.view.gsc }] : []);
+    let S = null, ins = null, si = 0;
+    if (name) for (const [k, sc] of scenes.entries()) {
+      ins = sc.gsc.instances.find(i => i.name.toLowerCase() === name);
+      if (ins && sc.gsc.objects[ins.object]) { S = sc.gsc; si = k; break; }
+    }
+    if (S) {
       const inv = M4.invert3x4(ins.matrix);
       const byTex = new Map();
       for (const di of S.objects[ins.object].draws) {
@@ -65,7 +79,7 @@ export class PropLayer {
         const geo = new THREE.BufferGeometry();
         geo.setAttribute('position', new THREE.BufferAttribute(P, 3)); geo.setAttribute('uv', new THREE.BufferAttribute(UV, 2)); geo.setAttribute('color', new THREE.BufferAttribute(C, 3));
         geo.setIndex(new THREE.BufferAttribute(I, 1)); geo.computeBoundingBox(); geo.computeBoundingSphere();
-        return { tex, geo };
+        return { tex, si, geo };
       });
       if (!out.length) out = null;
     }
@@ -75,15 +89,16 @@ export class PropLayer {
 
   // Props are full of cut-out cards (tree foliage, fences) in DXT1 with 1-bit alpha: read DXT1 with its alpha,
   // or the cards draw as solid boards. (Kept to props: on level surfaces a 3-colour DXT1 block isn't always a hole.)
-  cutout(i) {
-    const base = this.view.texture(i);
+  cutout(i, si = 0) { // si: which of view.sceneList() the texture belongs to
+    const base = si ? this.view.sceneList()[si].texture(i) : this.view.texture(i);
     if (!base || base.format !== THREE.RGB_S3TC_DXT1_Format) return base;
     this._cut ??= new Map();
-    if (!this._cut.has(i)) {
+    const key = `${si}:${i}`;
+    if (!this._cut.has(key)) {
       const t = base.clone(); t.format = THREE.RGBA_S3TC_DXT1_Format; t.userData = { ...base.userData, hasAlpha: true }; t.needsUpdate = true;
-      this._cut.set(i, t);
+      this._cut.set(key, t);
     }
-    return this._cut.get(i);
+    return this._cut.get(key);
   }
 
   matrixOf(p, m = new THREE.Matrix4()) {
@@ -93,7 +108,7 @@ export class PropLayer {
 
   build() {
     if (this.group) { this.root.remove(this.group); this.group.traverse(x => x.geometry?.dispose()); }
-    this._tpl = new Map();
+    this._tpl = new Map(); this._cut = new Map(); // scene order may have changed (another scene edited)
     this.group = new THREE.Group(); this.group.name = 'props';
     this.meshes = [];
     const props = this.doc.props;
@@ -104,7 +119,7 @@ export class PropLayer {
     for (const [t, idx] of byType) {
       const parts = this.template(t) || [{ tex: null, geo: marker, marker: true }];
       for (const part of parts) {
-        const map = part.marker ? null : this.cutout(part.tex);
+        const map = part.marker ? null : this.cutout(part.tex, part.si);
         const mat = part.marker ? new THREE.MeshBasicMaterial({ color: 0xffa040 })
           : new THREE.MeshBasicMaterial({ map, vertexColors: true, side: THREE.DoubleSide, alphaTest: map?.userData.hasAlpha ? 0.5 : 0 });
         const im = new THREE.InstancedMesh(part.geo, mat, idx.length);
@@ -156,12 +171,18 @@ export class PropLayer {
 
   // ------------------------------------------------------------ edits (the caller marks 'props' dirty)
   add(type, pos, yaw = 0) {
-    this.doc.props.push({ cell: null, raw: [0, 0, 0], pos: [...pos], qy: 0, qw: 32767, yaw, type, pad: 0, dirty: true });
+    this.doc.props.push({ cell: null, raw: [0, 0, 0], pos: [...pos], q: [0, 0, 0, 127], yaw, type, rawType: type + (this.doc.typeBase || 0), dirty: true });
     this.build();
     return this.doc.props.length - 1;
   }
+  // the level's type base: ids in the file are index + base
+  setBase(base, rebuild = true) {
+    this.doc.typeBase = base;
+    for (const p of this.doc.props) p.type = p.rawType - base;
+    if (rebuild) this.build();
+  }
   remove(i) { this.doc.props.splice(i, 1); this.build(); }
-  setType(i, t) { this.doc.props[i].type = t; this.doc.props[i].dirty = true; this.build(); }
+  setType(i, t) { const p = this.doc.props[i]; p.type = t; p.rawType = t + (this.doc.typeBase || 0); p.dirty = true; this.build(); }
   move(i, pos, yaw) { const p = this.doc.props[i]; p.pos = [...pos]; if (yaw != null) p.yaw = yaw; p.dirty = true; this.update(i); }
 
   write() { const buf = writeProps(this.doc); this.build(); return buf; }
@@ -182,6 +203,7 @@ export class PropLayer {
       <label>Y</label><input type="number" step="0.1" id="lp-y" value="${fmt(p.pos[1], 2)}">
       <label>Z</label><input type="number" step="0.1" id="lp-z" value="${fmt(p.pos[2], 2)}">
       <label>Turn°</label><input type="number" step="5" id="lp-yaw" value="${fmt(deg, 1)}">
+      <label title="Stored type ids are the PHYSOBJTYPES index plus this level's base (game-wide numbering). Change it if the models look wrong.">Type base</label><input type="number" step="1" id="lp-base" value="${this.doc.typeBase || 0}">
     </div>
     <div class="row" style="margin-top:6px"><button class="b" id="lp-dup">Duplicate</button><button class="b" id="lp-del">Delete</button><button class="b" id="lp-focus">Focus</button></div>
     <p class="hint">G moves it, R turns it. The game spawns these from <span class="mono">${esc(this.path.split('/').pop())}</span>; its <span class="mono">_NG</span> twin is used instead in one of the game's detail modes (choose which file in the toolbar). Positions are stored to 0.01 units.</p>`;

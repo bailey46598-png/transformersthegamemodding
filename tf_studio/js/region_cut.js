@@ -73,7 +73,7 @@ export function cutRegion(buffer, { cx, cz, r, keepBackdrop = 3000, hide: hideId
     if (wraps && diag >= keepBackdrop && nin <= n * 0.05) { report.backdrop++; continue; } // sky dome, far cards
     if (nin === 0) { hide(d); report.hidden++; continue; }
     // crosses the edge: trim by triangle centre
-    const tris = stripToTriangles(ib, d.start, d.prims, n);
+    const tris = stripToTriangles(d.ib ? S.ib(d.ib) : ib, d.start, d.prims, n);
     const keep = [];
     for (let t = 0; t < tris.length; t += 3) {
       const a = tris[t] * 3, b = tris[t + 1] * 3, c = tris[t + 2] * 3;
@@ -90,6 +90,7 @@ export function cutRegion(buffer, { cx, cz, r, keepBackdrop = 3000, hide: hideId
     const rec = recOf(d);
     S.dv.setUint16(S.base + rec + 4, strip.length - 2, true);
     S.dv.setUint32(S.base + rec + 0x18, ibLen + extra.length, true);
+    S.dv.setUint32(S.base + rec + 0x1C, 0, true); // the new strip goes into index buffer 0 (hi-res City has two)
     for (const v of strip) extra.push(v);
     report.trimmed++; report.triKept += keep.length / 3; report.triDropped += (tris.length - keep.length) / 3;
   }
@@ -254,12 +255,12 @@ export function collisionFromGround(target, texIds, like) {
 // Read the result back and check it: scene parses, every draw's strip is inside the index buffer, collision trees pass.
 export function verifyCut(bytes) {
   const S = new GSCScene(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));
-  const ibn = S.ibs[0].size / 2, errs = [];
+  const errs = [];
   const cmd0 = S.ptr(S.T.DISP + 8 + 8);
   for (const d of S.draws) {
     const rec = S.ptr(cmd0 + 16 * d.cmd + 4);
     const start = S.u32(rec + 0x18), prims = S.u16(rec + 4);
-    if (start + prims + 2 > ibn) errs.push(`draw ${d.id} strip past the index buffer`);
+    if (start + prims + 2 > S.ibs[d.ib ?? 0].size / 2) errs.push(`draw ${d.id} strip past index buffer ${d.ib ?? 0}`);
   }
   const D = readDNO2(S);
   for (const g of D?.staticGeoms || []) {

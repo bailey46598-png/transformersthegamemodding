@@ -7,7 +7,7 @@
 // its spline's points: select the spline to move them.
 import * as THREE from 'three';
 import { api, $, esc, fmt, joinPath } from './common.js';
-import { loadCharacter, loadModel, buildMeshes, poseBones, skinMeshes } from './rig.js';
+import { loadCharacter, loadModel, buildMeshes, poseBones, skinMeshes, restPose } from './rig.js';
 
 const CREATE = /^(\s*)(;?)(\s*)CreateModule\s+"#Creature"\s+(.*)$/i;
 
@@ -84,12 +84,17 @@ export class SpawnLayer {
     const key = s.type.toLowerCase();
     if (!this.models.has(key)) this.models.set(key, (async () => {
       const e = mv.charByName.get(key); if (!e) return null;
-      try { const { modelPath, parents } = await loadCharacter(e, mv.charByName); return await loadModel(modelPath, parents); } catch { return null; }
+      try {
+        const { modelPath, parents } = await loadCharacter(e, mv.charByName);
+        const model = await loadModel(modelPath, parents);
+        model.rest = await restPose(model);
+        return model;
+      } catch { return null; }
     })());
     const model = await this.models.get(key);
     if (!model || g.parent !== this.group) return;
     const { group, meshes } = buildMeshes(model);
-    skinMeshes(model, meshes, poseBones(model, null));
+    skinMeshes(model, meshes, model.rest || poseBones(model, null));
     for (const m of meshes) { m.material = m.material.clone(); m.material.transparent = true; m.material.opacity = s.off ? 0.35 : 0.85; m.userData.sel = { kind: 'spawn', i }; this.pickables.push(m); }
     g.add(group);
   }

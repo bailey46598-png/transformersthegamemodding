@@ -2,9 +2,10 @@ import { ModelView } from './model_view.js';
 import { LevelView } from './level_view.js';
 import { CutsceneView } from './cutscene_view.js';
 import { CameraView } from './camera_view.js';
+import { TextureView } from './texture_view.js';
 import { $, status } from './common.js';
 
-const TABS = ['model', 'level', 'cut', 'cam'];
+const TABS = ['model', 'level', 'cut', 'cam', 'tex'];
 const views = {};
 const started = {};
 
@@ -23,6 +24,7 @@ try {
   views.level = new LevelView();
   views.cut = new CutsceneView(views.model);
   views.cam = new CameraView();
+  views.tex = new TextureView(views.model);
   for (const b of document.querySelectorAll('.tabs button')) b.onclick = () => show(b.dataset.tab);
   let tab = 'model';
   try { tab = localStorage.getItem('tfstudio.tab') || 'model'; } catch {}

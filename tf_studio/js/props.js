@@ -10,8 +10,19 @@
 //   u32 prop count, then the props grouped by cell, in cell order:         (12 B)
 //     s16 x, y, z: offset from the cell centre in 1/100 units. The largest offsets in a cell equal its radius
 //                  (37.5 -> 3,743, 56.25 -> 5,606 on Tranquility 2): the radius is a bounding sphere, not a scale
-//     s16 qy, qw: the turn as a quaternion about Y (x 32767): (0, 1) = 0°, (0.7, 0.7) = 90°, (1, 0) = 180°
-//     u8 type (index into PHYSOBJTYPES.INI), u8 0
+//     s8 x, y, z, w: the turn as a quaternion (x 127). Props only turn about Y: (0,0,0,127) = 0°,
+//                  (0,-89,0,89) = -90° (shipped Airbase fence). Writing 16-bit values here stands props on end (2026-11-10).
+//     u16 type: PHYSOBJTYPES.INI index + a per-level base. The ids run on across levels: Tranquility 2 0,
+//               Qatar ~281, City 396, Hoover Dam inside ~506, outside ~709, Airbase 861 (proven in game), Cybertron
+//               961, Cybertron Decepticon 1010. The base isn't in the file: see typeBase().
+// Levels whose type base is known (checked in game). Others: the lowest id in the file (right when the level uses its
+// first type), or the level tab's override.
+export const KNOWN_TYPE_BASE = { AIRBASE: 861 };
+export function typeBase(doc, level) {
+  const k = (level || '').toUpperCase();
+  if (k in KNOWN_TYPE_BASE) return KNOWN_TYPE_BASE[k];
+  return doc.props.length ? Math.min(...doc.props.map(p => p.rawType)) : 0;
+}
 export function readProps(buffer) {
   const dv = new DataView(buffer), u8 = new Uint8Array(buffer);
   if (dv.getUint32(0, true) !== 0x06041D00) throw new Error('not a NEWPHYSOBJ file (unknown header)');
@@ -44,9 +55,10 @@ export function readProps(buffer) {
     left--;
     const c = cells[ci], s = 0.01;
     const raw = [dv.getInt16(o, true), dv.getInt16(o + 2, true), dv.getInt16(o + 4, true)];
-    const qy = dv.getInt16(o + 6, true), qw = dv.getInt16(o + 8, true);
-    props.push({ cell: ci, raw, pos: [c.c[0] + raw[0] * s, c.c[1] + raw[1] * s, c.c[2] + raw[2] * s], qy, qw,
-      yaw: 2 * Math.atan2(qy, qw), type: u8[o + 10], pad: u8[o + 11], dirty: false });
+    const q = [dv.getInt8(o + 6), dv.getInt8(o + 7), dv.getInt8(o + 8), dv.getInt8(o + 9)];
+    const rawType = dv.getUint16(o + 10, true);
+    props.push({ cell: ci, raw, pos: [c.c[0] + raw[0] * s, c.c[1] + raw[1] * s, c.c[2] + raw[2] * s], q,
+      yaw: 2 * Math.atan2(q[1], q[3]), rawType, type: rawType, dirty: false });
   }
   return { schema, cells, props };
 }
@@ -85,12 +97,12 @@ export function writeProps(doc) {
     const p = props[i], c = cells[p.cell];
     if (p.dirty) {
       p.raw = [0, 1, 2].map(a => s16((p.pos[a] - c.c[a]) * 100));
-      p.qy = s16(Math.sin(p.yaw / 2) * 32767); p.qw = s16(Math.cos(p.yaw / 2) * 32767);
+      p.q = [0, Math.round(Math.sin(p.yaw / 2) * 127), 0, Math.round(Math.cos(p.yaw / 2) * 127)];
       p.dirty = false;
     }
     dv.setInt16(o, p.raw[0], true); dv.setInt16(o + 2, p.raw[1], true); dv.setInt16(o + 4, p.raw[2], true);
-    dv.setInt16(o + 6, p.qy, true); dv.setInt16(o + 8, p.qw, true);
-    u8[o + 10] = p.type; u8[o + 11] = p.pad || 0;
+    for (let k = 0; k < 4; k++) dv.setInt8(o + 6 + k, p.q[k]);
+    dv.setUint16(o + 10, p.type + (doc.typeBase || 0), true);
     o += 12;
   }
   // keep the in-memory order the same as the file's

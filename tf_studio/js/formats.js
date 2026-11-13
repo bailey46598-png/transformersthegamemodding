@@ -120,18 +120,29 @@ export const M4 = {
 // ---------------------------------------------------------------- vertex layouts
 // GHG: by stride. GSC: from the material's vertex-format bits (+0x1F0), falling back to stride.
 export function layoutForStride(stride) {
+  // 32 and 40 (the hi-res set's formats, vertex-format bit 0x20): a 4-byte tangent at +16 moves the colour to +20
+  // and the UV to +24 (40 = skinned, weights and indices after the UV)
+  if (stride === 32) return { pos: 0, nrm: 12, col: 20, uv: 24, wts: -1, idx: -1 };
+  if (stride === 40) return { pos: 0, nrm: 12, col: 20, uv: 24, wts: 32, idx: 36 };
   if (stride >= 28) return { pos: 0, nrm: 12, col: 16, uv: 20, wts: stride >= 36 ? 28 : -1, idx: stride >= 36 ? 32 : -1 };
   if (stride === 24) return { pos: 0, nrm: -1, col: 12, uv: 16, wts: -1, idx: -1 };
   if (stride === 20) return { pos: 0, nrm: -1, col: 12, uv: -1, wts: -1, idx: -1 };
   return { pos: 0, nrm: -1, col: -1, uv: -1, wts: -1, idx: -1 };
 }
 export function layoutForFormat(fmt, stride) {
-  const L = { pos: -1, nrm: -1, col: -1, uv: -1, wts: -1, idx: -1 };
+  const L = { pos: -1, nrm: -1, col: -1, uv: -1, wts: -1, idx: -1, w2: -1 };
   let o = 0;
-  const parts = [[0x01, 'pos', 12], [0x08, 'nrm', 4], [0x100, 'col', 4], [0x200, null, 4], [0x400, null, 4], [0x800, 'uv', 8], [0x1000, 'uv2', 16]];
+  // Checked 2026-11-12 against every format in the hi-res Tranquility, Qatar and City scenes (sizes add up to the
+  // stride; colours and UVs read sensibly). 0x200 and 0x400 share one dword: with both set (e.g. 0x1F29, stride 52)
+  // it is still 4 bytes. Counting it twice made those formats fall back to the stride guess, which read the tangent
+  // as the colour and the colour as the UV (the black-and-white striped roads and kerbs in High Detail).
+  const parts = [[0x01, 'pos', 12], [0x08, 'nrm', 4], [0x20, null, 4] /* tangent (hi-res set) */, [0x80, null, 4],
+    [0x100, 'col', 4], [0x600, 'w2', 4] /* 0x400: terrain layer weights (BGRA: R = layer 1, G = layer 2, B = layer 3) */,
+    [0x800, 'uv', 8], [0x1000, 'uv2', 16], [0x2000, null, 32], [0x4000000, null, 8]];
   for (const [bit, name, size] of parts) {
     if (fmt & bit) { if (name === 'uv2') { if (L.uv < 0) L.uv = o; } else if (name) L[name] = o; o += size; }
   }
+  if (!(fmt & 0x400)) L.w2 = -1; // 0x200 alone: that dword isn't the layer weights
   if (o !== stride || L.pos !== 0) return layoutForStride(stride);
   return L;
 }
@@ -302,10 +313,33 @@ export class GSCScene extends Container {
     this.ms0 = M + 0x10;
     this.nmat = this.u32(M + 8);
     this.materials = [];
+    // A material's texture id is a TST0 slot number, not a texture-list index: empty slots (w = h = 0) have no
+    // texture entry, so every slot after one is shifted (Airbase: by 5 past slot ~258; hi-res scenes by more).
+    this.slotTex = [];
+    const T = this.T.TST0;
+    if (T != null && this.slotCount) {
+      const base = T + 8 + 4 * this.slotCount;
+      let ti = 0;
+      for (let k = 0; k < this.slotCount; k++) {
+        const w = this.i32(base + 0x28 * k), h = this.i32(base + 0x28 * k + 4);
+        this.slotTex.push(w === 0 && h === 0 ? -1 : ti < this.textures.length ? ti++ : -1);
+      }
+      // a table that doesn't line up with the texture list (the ported HOOVEREXT scene's slots are all blank):
+      // fall back to reading ids as list indices
+      if (ti !== this.textures.length) this.slotTex = [];
+    }
+    const slotToTex = s => (s < 0 ? -1 : this.slotTex.length ? (s < this.slotTex.length ? this.slotTex[s] : -1) : s);
     for (let k = 0; k < this.nmat; k++) {
       const r = this.ms0 + 628 * k;
       this.materials.push({
-        tex: this.i32(r + 0xB8), fmt: this.u32(r + 0x1F0),
+        tex: slotToTex(this.i32(r + 0xB8)), slot: this.i32(r + 0xB8), fmt: this.u32(r + 0x1F0),
+        // extra texture layers (+0xBC, +0xC0, +0xC4; -1 = none). With per-vertex weights (format bit 0x400) they
+        // are terrain layers blended over layer 0 (High Detail's single-pass terrain)
+        layers: [0xBC, 0xC0, 0xC4].map(o => slotToTex(this.i32(r + o))),
+        // alpha mode, low 2 bits of the flags word at +0x40: 0 = opaque (a DXT5 alpha is then a gloss/reflection
+        // mask, e.g. City's window facades), 1-3 = blended (road dirt layers, foliage, terrain layer passes, decals).
+        // Inferred 2026-11-12 from hi-res Tranquility and City; 2 and 3 are drawn as plain blending (exact op unknown).
+        alpha: this.u32(r + 0x40) & 3,
         color: [this.f32(r + 0x54), this.f32(r + 0x58), this.f32(r + 0x5C)],
       });
     }
@@ -325,6 +359,9 @@ export class GSCScene extends Container {
           id: this.draws.length, cmd: k, cmdRec: r, material: mat, matrix: mtx, matrixAt: mtx ? mtxAt : -1,
           prims: this.u16(r + 4), stride: this.u16(r + 6),
           base: this.u32(r + 0x10), count: this.u32(r + 0x14), start: this.u32(r + 0x18), vb: this.u32(r + 0x24),
+          // index buffer (+0x1C). Normal scenes have one; hi-res CITY_BUILDINGS has two and 2,268 of its draws use
+          // the second (read from the first, City's skyscrapers came out as diagonal smears across the block)
+          ib: this.u32(r + 0x1C) < this.ibs.length ? this.u32(r + 0x1C) : 0,
           object: -1,
         };
         if (d.vb < this.vbs.length && (d.base + d.count) * d.stride <= this.vbs[d.vb].size) {
@@ -401,16 +438,22 @@ export class GSCScene extends Container {
     const L = this.layout(d), n = d.count;
     const P = this.readPositions(d);
     if (d.matrix) transformPoints(P, d.matrix);
-    const UV = new Float32Array(n * 2), C = new Float32Array(n * 3);
+    const UV = new Float32Array(n * 2), C = new Float32Array(n * 3), A = new Float32Array(n).fill(1);
+    const W = L.w2 >= 0 ? new Float32Array(n * 3) : null;
+    let minA = 1;
     for (let i = 0; i < n; i++) {
       const o = this.vertexOffset(d, i);
       if (L.uv >= 0) { UV[i * 2] = this.dv.getFloat32(o + L.uv, true); UV[i * 2 + 1] = this.dv.getFloat32(o + L.uv + 4, true); }
       if (L.col >= 0) { // stored BGRA, 0x7F = 1.0
         C[i * 3] = Math.min(this.u8[o + L.col + 2] / 127, 2); C[i * 3 + 1] = Math.min(this.u8[o + L.col + 1] / 127, 2); C[i * 3 + 2] = Math.min(this.u8[o + L.col] / 127, 2);
+        // alpha: blend weight of a terrain layer pass drawn over the same vertices (and of other blended surfaces)
+        A[i] = Math.min(this.u8[o + L.col + 3] / 127, 1); if (A[i] < minA) minA = A[i];
       } else { C[i * 3] = C[i * 3 + 1] = C[i * 3 + 2] = 1; }
+      // layer weights, BGRA bytes 0..255: R = layer 1, G = layer 2, B = layer 3
+      if (W) { W[i * 3] = this.u8[o + L.w2 + 2] / 255; W[i * 3 + 1] = this.u8[o + L.w2 + 1] / 255; W[i * 3 + 2] = this.u8[o + L.w2] / 255; }
     }
-    const tris = stripToTriangles(this.ib(0), d.start, d.prims, n);
-    return { P, UV, C, tris };
+    const tris = stripToTriangles(this.ib(d.ib ?? 0), d.start, d.prims, n);
+    return { P, UV, C, A, W, minA, tris };
   }
 }
 

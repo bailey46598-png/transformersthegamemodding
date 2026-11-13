@@ -85,6 +85,25 @@
   .letterbox::before { top: 0; } .letterbox::after { bottom: 0; }
   #c-shots .item.on { background: #3a3220; color: var(--accent); }
   #c-time { white-space: nowrap; }
+  .tag.hires { background: #1f3346; color: var(--accent2); }
+  /* texture editor */
+  #tab-tex { grid-template-columns: 260px 1fr 330px; }
+  .tsplit { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .tsplit > .canvas { border-right: 1px solid var(--line); min-width: 0; }
+  .t2d { position: relative; min-width: 0; min-height: 0; overflow: hidden; }
+  .t2d canvas { position: absolute; inset: 0; display: block; cursor: crosshair; }
+  #t-canvas canvas { cursor: crosshair; }
+  .texitem { display: flex; gap: 8px; padding: 4px; border-radius: 4px; cursor: pointer; align-items: center; font-size: 12px; line-height: 1.25; }
+  .texitem:hover { background: var(--panel2); }
+  .texitem.on { background: #3a3220; }
+  .texitem canvas { width: 48px; height: 48px; image-rendering: pixelated; border: 1px solid var(--line); flex: none; background: #333; }
+  .tools { display: grid; grid-template-columns: repeat(5, 1fr); gap: 4px; }
+  .tools button { padding: 4px 2px; font-size: 12px; }
+  .slider { display: grid; grid-template-columns: 70px 1fr 52px; gap: 6px; align-items: center; font-size: 12px; margin: 3px 0; }
+  .slider span:last-child { text-align: right; color: var(--dim); font-family: Consolas, monospace; font-size: 11px; }
+  input[type=color] { width: 40px; height: 26px; padding: 0; border: 1px solid var(--line); background: none; border-radius: 4px; cursor: pointer; }
+  #t-swatch { width: 18px; height: 18px; border-radius: 50%; border: 1px solid #000; display: inline-block; }
+  #t-readout { font-family: Consolas, monospace; font-size: 11px; color: var(--dim); }
 </style>
 <script type="importmap">
 { "imports": {
@@ -97,7 +116,7 @@
 <body>
 <header>
   <h1>TF STUDIO</h1>
-  <nav class="tabs"><button data-tab="model" class="on">Models &amp; animations</button><button data-tab="level">Levels &amp; maps</button><button data-tab="cut">Cutscenes</button><button data-tab="cam">Cameras</button></nav>
+  <nav class="tabs"><button data-tab="model" class="on">Models &amp; animations</button><button data-tab="level">Levels &amp; maps</button><button data-tab="cut">Cutscenes</button><button data-tab="cam">Cameras</button><button data-tab="tex">Textures</button></nav>
   <div id="status">Starting…</div>
 </header>
 
@@ -106,6 +125,7 @@
   <div class="side">
     <div class="head">
       <select id="m-source"><option value="chars">Characters (from configs)</option><option value="files">All model files (.GHG)</option></select>
+      <select id="m-detail" title="High = the hi-res asset set (bigger textures, heavier meshes). Models without a hi-res copy open normally."><option value="normal">Normal detail</option><option value="high">High detail (hi-res set)</option></select>
       <input type="text" id="m-filter" placeholder="Filter…">
     </div>
     <div class="list" id="m-list"></div>
@@ -228,6 +248,8 @@
   <div class="side right">
     <section><h3>Level</h3><div id="l-info" class="hint">Nothing loaded.</div></section>
     <section><h3>Selection</h3><div id="l-sel" class="hint">Click geometry, a marker, or an item in the list.</div></section>
+    <section><h3>Script cutscenes</h3><div id="l-shots" class="hint">Nothing loaded.</div></section>
+    <section><h3>Game recordings</h3><div id="l-rec" class="hint">Nothing loaded.</div></section>
     <section>
       <h3>Save</h3>
       <div class="row" id="l-dirty" style="margin-bottom:6px"></div>
@@ -245,7 +267,9 @@
 <!-- ============================== CUTSCENE TAB ============================== -->
 <main id="tab-cut" class="hidden">
   <div class="side">
-    <div class="head"><input type="text" id="c-filter" placeholder="Filter cutscenes…"></div>
+    <div class="head">
+      <select id="c-detail" title="High detail: the level's split scenes and the character models from the hi-res set, as the game loads them in High Detail"><option value="normal">Normal detail</option><option value="high">High detail (hi-res set)</option></select>
+      <input type="text" id="c-filter" placeholder="Filter cutscenes…"></div>
     <div class="list" id="c-list"></div>
   </div>
   <div class="view">
@@ -351,6 +375,94 @@
       <p class="hint">Placed from the preset values; the game's exact chase math isn't decoded. Yellow = aim point, line = the camera's collision ray (red: IgnoreRayHitsUnder too small for the drawn model), ring = IgnoreRayHitsUnder, orange dot = where the ray leaves the drawn model (the game tests its collision shape, which can be bigger).</p></section>
     <section><h3>F8 dump (measured)</h3><div id="k-dump" class="hint">–</div>
       <p class="hint">White = recorded aim point, blue = recorded chase rig.</p></section>
+  </div>
+</main>
+
+<!-- ============================== TEXTURE EDITOR TAB ============================== -->
+<main id="tab-tex" class="hidden">
+  <div class="side">
+    <div class="head">
+      <select id="t-source"><option value="chars">Characters (from configs)</option><option value="files">All model files (.GHG)</option></select>
+      <select id="t-detail" title="High = the hi-res asset set: 512-1024 px textures. Models without a hi-res copy open normally."><option value="normal">Normal detail</option><option value="high">High detail (hi-res set)</option></select>
+      <input type="text" id="t-filter" placeholder="Filter…">
+    </div>
+    <div class="list" id="t-list"></div>
+  </div>
+  <div class="view">
+    <div class="tsplit">
+      <div class="canvas" id="t-canvas">
+        <div class="empty" id="t-empty">Pick a model on the left.<br><span class="hint">Left-drag paints · right-drag orbits · middle-drag pans · wheel zooms</span></div>
+        <div class="overlay">
+          <div class="chip"><button class="b" id="t-frame" title="Frame the model (F)">Frame</button><button class="b" id="t-shot">Screenshot</button></div>
+          <div class="chip"><label title="Paint both sides at once (M)"><input type="checkbox" id="t-mirror"> Mirror L/R</label></div>
+        </div>
+      </div>
+      <div class="t2d" id="t-2d">
+        <canvas id="t-paper"></canvas>
+        <div class="overlay">
+          <div class="chip"><span class="mono" id="t-texname">–</span></div>
+          <div class="chip"><label><input type="checkbox" id="t-uv" checked> UV lines</label></div>
+        </div>
+      </div>
+    </div>
+    <div class="timeline"><span id="t-readout">–</span><span class="hint" style="margin-left:auto">B brush · R recolour · E restore · G fill · I pick · [ ] size · M mirror · Ctrl+Z / Ctrl+Y · Ctrl+S save</span></div>
+  </div>
+  <div class="side right">
+    <section><h3>Model</h3><div id="t-info" class="hint">Nothing loaded.</div></section>
+    <section>
+      <h3>Tool</h3>
+      <div class="tools" id="t-tools">
+        <button class="b primary" data-tool="brush" title="Paint the colour (B)">Brush</button>
+        <button class="b" data-tool="recolor" title="Paint the colour's hue but keep the texture's shading and detail (R)">Recolour</button>
+        <button class="b" data-tool="restore" title="Paint the original texture back (E)">Restore</button>
+        <button class="b" data-tool="fill" title="Fill a connected area of similar colour (G)">Fill</button>
+        <button class="b" data-tool="pick" title="Pick a colour from the model or texture (I)">Pick</button>
+      </div>
+      <div class="row" style="margin-top:8px"><input type="color" id="t-colour" value="#f07a22"><span id="t-swatch"></span><span class="hint">Colour</span></div>
+      <div id="t-brushopts">
+        <div class="slider"><span>Size</span><input type="range" id="t-size" min="1" max="256" value="12"><span id="t-sizev"></span></div>
+        <div class="slider"><span>Opacity</span><input type="range" id="t-opacity" min="1" max="100" value="100"><span id="t-opv"></span></div>
+        <div class="slider"><span>Hardness</span><input type="range" id="t-hard" min="0" max="100" value="60"><span id="t-hardv"></span></div>
+        <p class="hint" style="margin:4px 0 0">Size is in texels. On the model the brush is a ball on the surface, so it follows the model across texture seams.</p>
+      </div>
+      <div id="t-fillopts" class="hidden">
+        <div class="slider"><span>Tolerance</span><input type="range" id="t-tol" min="0" max="120" value="28"><span></span></div>
+        <label class="hint"><input type="checkbox" id="t-fillshade" checked> Keep shading</label>
+      </div>
+    </section>
+    <section>
+      <h3>Colour swap (whole texture)</h3>
+      <div class="row"><span class="hint" style="width:34px">From</span><input type="color" id="t-from" value="#1a2a80"><button class="b" data-pickinto="t-from" title="Pick from the model or texture">Pick</button>
+        <span class="hint" style="width:20px;margin-left:6px">To</span><input type="color" id="t-to" value="#f07a22"><button class="b" data-pickinto="t-to">Pick</button></div>
+      <div class="slider"><span>Hue range</span><input type="range" id="t-htol" min="4" max="90" value="28"><span></span></div>
+      <div class="slider"><span>Min. sat.</span><input type="range" id="t-smin" min="0" max="80" value="30"><span></span></div>
+      <button class="b" id="t-swap" style="width:100%">Swap colours</button>
+      <h3 style="margin-top:10px">Adjust</h3>
+      <div class="slider"><span>Hue ±</span><input type="range" id="t-ah" min="-180" max="180" value="0"><span></span></div>
+      <div class="slider"><span>Saturation</span><input type="range" id="t-as" min="0" max="200" value="100"><span></span></div>
+      <div class="slider"><span>Brightness</span><input type="range" id="t-av" min="0" max="200" value="100"><span></span></div>
+      <div class="row"><label class="hint"><input type="checkbox" id="t-aonly"> only the "From" hue</label><button class="b" id="t-adjust" style="margin-left:auto">Apply</button></div>
+    </section>
+    <section>
+      <h3>Textures</h3>
+      <div id="t-texlist"></div>
+      <div class="row" style="margin-top:6px">
+        <button class="b" id="t-imppng" title="Load a PNG/JPG into the selected texture (scaled to fit)">Import image…</button>
+        <button class="b" id="t-exppng">Export PNG</button>
+        <button class="b" id="t-revtex" title="Back to the texture as it is in the file">Revert texture</button>
+      </div>
+      <input type="file" id="t-file" accept="image/*" class="hidden">
+    </section>
+    <section>
+      <h3>Save</h3>
+      <div id="t-dirty" class="row" style="margin-bottom:6px"></div>
+      <div class="row">
+        <button class="b" id="t-undo">Undo</button><button class="b" id="t-redo">Redo</button>
+        <button class="b primary" id="t-save" disabled>Save to .GHG</button>
+        <button class="b" id="t-dl" disabled title="Download the edited .GHG instead of saving it">Download</button>
+      </div>
+      <p class="hint">Saving re-compresses only the 4×4 blocks you changed (same size and format, so the file layout stays the same). The first save keeps the original as <span class="mono">.studio.bak</span>. Models that borrow textures (transforming models) pick up the change from the file that owns them.</p>
+    </section>
   </div>
 </main>
 
